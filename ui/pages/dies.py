@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, Q
                                QLabel, QLineEdit, QMessageBox)
 
 from core.data import DIE_TYPES
+from core.dies import actual_life
 from core.paths import app_dir
 from core.storage import DamagedFile, load_list, save_list
 from core.tolerance import STANDARDS, check_measure, tolerance
@@ -70,6 +71,8 @@ class DiesPage(Page):
         bar.addWidget(label("  Оранжевым — износ от 90 % или замер у верхней границы допуска; "
                             "красным — ресурс исчерпан или замер вне допуска.", "note", True), 1)
         lst.addLayout(bar)
+        self.life = label("", "muted", True)
+        lst.addWidget(self.life)
         lst.addWidget(self.status)
         add.clicked.connect(self.add_die)
         b_use.clicked.connect(self.add_usage)
@@ -82,7 +85,13 @@ class DiesPage(Page):
     def recalc(self):
         self.refresh()
 
+    def on_show(self):
+        # журнал мог измениться в «Маршруте» (запись партии) — читаем заново, чтобы не затереть
+        self.dies = self.load()
+        self.refresh()
+
     def load(self):
+        self.readonly = False
         try:
             return load_list(self.path)
         except DamagedFile as e:
@@ -126,6 +135,16 @@ class DiesPage(Page):
             else:
                 colors.append(None)
         fill_table(self.table, rows, colors)
+        life = actual_life(self.dies)
+        if life:
+            by_type = [(t, actual_life(self.dies, t)) for t in DIE_TYPES]
+            parts = [f"{t} — {fmt(x[0], 1)} т ({x[1]} шт.)" for t, x in by_type if x]
+            self.life.setText(f"Фактическая стойкость по снятым фильерам: {fmt(life[0], 1)} т в "
+                              f"среднем ({life[1]} шт.); " + "; ".join(parts) + ". Её можно взять "
+                              "в себестоимость: «Маршрут» → «Экономика».")
+        else:
+            self.life.setText("Фактическая стойкость появится, когда будут сняты с работы "
+                              "фильеры с записанной наработкой.")
 
     @staticmethod
     def tol_state(d):

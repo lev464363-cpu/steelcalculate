@@ -28,6 +28,11 @@ def card_html(name, mill, group, p, res, note=""):
             ("Отжигов", str(res["anneals"])),
             ("Мин. запас прочности", f"{fmt(res['gamma_min'], 2)} (допустимо от "
                                      f"{fmt(p['gmin'], 2)})"),
+            ("Прочность готовой проволоки", f"{fmt(res['sig_end'], 0)} МПа"
+             + (f" (требование {fmt(p['sig_min'], 0) if p.get('sig_min') else '—'}–"
+                f"{fmt(p['sig_max'], 0) if p.get('sig_max') else '—'}: "
+                f"{'соответствует' if res['strength_ok'] else 'НЕ соответствует'})"
+                if p.get("sig_min") or p.get("sig_max") else "")),
             ("Мощность на волочение", f"{fmt(res['power'], 1)} кВт"),
             ("Температура проволоки: макс. / на намотке",
              f"{fmt(res['t_max'], 0)} / {fmt(res['t_wind'], 0)} °C" if res.get("thermal") else "—"),

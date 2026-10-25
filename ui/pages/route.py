@@ -122,6 +122,8 @@ class RoutePage(Page):
         self.sigf = field("Прочность после обжатия, МПа", "", "route/sigf")
         self.redref = field("…при суммарном обжатии, %", "", "route/redref")
         self.nh = field("Показатель упрочнения n", "", "route/nh")
+        self.sig_ann = field("Прочность после отжига, МПа", "", "route/sig_ann")
+        self.sig_ann.setPlaceholderText("как у заготовки")
         self.ys = field("Отношение σт/σв", "0,85", "route/ys")
         note(label("Предел текучести к прочности: ≈0,85 для холоднотянутой проволоки, 0,6–0,75 для "
                    "отожжённой катанки, 0,9–0,95 для сильно нагартованной. Уточняется по практике.",
@@ -135,6 +137,10 @@ class RoutePage(Page):
         self.limit = field("Предел обжатия до отжига, %", "", "route/limit")
         self.lmax = field("Макс. вытяжка за проход", "", "route/lmax")
         self.gmin = field("Минимальный запас прочности", "1,4", "route/gmin")
+        self.sig_min = field("Прочность готовой по ГОСТ/ТУ: от, МПа", "", "route/sig_min")
+        self.sig_max = field("…до, МПа", "", "route/sig_max")
+        for w in (self.sig_min, self.sig_max):
+            w.setPlaceholderText("не задано")
         self.src = label("", "note", True)
         note(self.src)
 
@@ -270,6 +276,11 @@ class RoutePage(Page):
         nh = self.nh.value()
         if nh > 1.5:
             raise FieldError(self.nh, "Показатель упрочнения обычно 0,2–0,8.")
+        sig_ann = self.sig_ann.value(optional=True)
+        sig_min = self.sig_min.value(optional=True)
+        sig_max = self.sig_max.value(optional=True)
+        if sig_min is not None and sig_max is not None and sig_min >= sig_max:
+            raise FieldError(self.sig_max, "Верхняя граница прочности должна быть больше нижней.")
         ys = self.ys.value()
         if not 0.4 <= ys <= 1:
             raise FieldError(self.ys, "Отношение σт/σв — от 0,4 до 1 (обычно 0,6–0,95).")
@@ -288,7 +299,8 @@ class RoutePage(Page):
         dcool = self.dcool.value()
         return dict(vcool=vcool, dcool=dcool, d0=d0, dk=dk, ratio=ratio, lmax=lmax, v=v, drum=drum, limit=limit,
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
-                    redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq)
+                    redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
+                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max)
 
     def recalc(self):
         p = self._inputs()
@@ -532,7 +544,8 @@ class RoutePage(Page):
                  "lmax": self.lmax, "gmin": self.gmin, "rho": self.rho, "sig0": self.sig0,
                  "sigf": self.sigf, "nh": self.nh, "redref": self.redref, "t0": self.t0,
                  "tw": self.tw, "cool": self.cool, "cp": self.cp, "vcool": self.vcool,
-                 "dcool": self.dcool, "ys": self.ys, "sq": self.sq}
+                 "dcool": self.dcool, "ys": self.ys, "sq": self.sq,
+                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max}
         for key, field in names.items():
             if key not in card["params"]:       # старые техкарты: оставляем текущее значение
                 continue
@@ -555,7 +568,10 @@ class RoutePage(Page):
                 ("Прочность заготовки на разрыв, МПа", p["sig0"]), ("Прочность после обжатия, МПа", p["sigf"]),
                 ("…при суммарном обжатии, %", p["redref"]),
                 ("Показатель упрочнения n", p["nh"]), ("Отношение σт/σв", p["ys"]),
-                ("Противонатяжение, МПа", p["sq"])]
+                ("Противонатяжение, МПа", p["sq"]),
+                ("Прочность после отжига, МПа", p["sig_ann"] if p["sig_ann"] else "как у заготовки"),
+                ("Прочность готовой по ГОСТ/ТУ, МПа",
+                 " – ".join(fmt(x, 0) if x else "—" for x in (p["sig_min"], p["sig_max"])))]
         rows, fills = [], []
         for r, f in zip(self.rows, self.forces):
             rows.append([r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),

@@ -181,6 +181,26 @@ class TestForces(unittest.TestCase):
         self.assertEqual(res["gamma_min"], same["gamma_min"])
         self.assertLess(plan_route(dict(BASE, sq=80))["t_max"], res["t_max"] + 1e-9)
 
+    def test_strength_after_anneal(self):
+        _, _, rows, anneals = build_route(5.5, 1.2, 14, 1.15, 70, 1.35, 15, None)
+        self.assertGreater(anneals, 0)
+        f0 = route_forces(rows, 6, 0.05, 560, 1050, 0.5)
+        f1 = route_forces(rows, 6, 0.05, 560, 1050, 0.5, sig_ann=480)
+        first = next(i for i, r in enumerate(rows) if r["anneal"])
+        for i in range(first):                         # до отжига ничего не меняется
+            self.assertAlmostEqual(f1[i]["sig_out"], f0[i]["sig_out"], places=9)
+        for i in range(first, len(rows)):              # после — кривая ниже на 80 МПа
+            self.assertAlmostEqual(f0[i]["sig_out"] - f1[i]["sig_out"], 80, places=9)
+
+    def test_strength_requirement(self):
+        res = plan_route(BASE)
+        s = res["sig_end"]
+        self.assertTrue(plan_route(dict(BASE, sig_min=s - 10, sig_max=s + 10))["strength_ok"])
+        low = plan_route(dict(BASE, sig_min=s + 10))
+        self.assertFalse(low["strength_ok"])
+        self.assertTrue(any("не ниже" in w for w in low["warnings"]))
+        self.assertFalse(plan_route(dict(BASE, sig_max=s - 10))["strength_ok"])
+
 
 class TestCoating(unittest.TestCase):
     def test_copper_share(self):
@@ -203,7 +223,8 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertEqual(len(res["rows"]), 14)
         self.assertAlmostEqual(res["productivity"], g_per_m(7.85, 1.2) * 15 * 3.6, places=6)
         self.assertEqual(res["warnings"], [])
-        self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq"})
+        self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq",
+                                                     "sig_ann", "sig_min", "sig_max"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)
@@ -485,6 +506,37 @@ class TestOptimizer(unittest.TestCase):
         self.assertLessEqual(b["v"], L["v_max"] + 1e-9)
         self.assertTrue(all(L["v_min"] - 1e-9 <= v <= L["v_max"] + 1e-9 for v in b["v_stages"]))
         self.assertGreaterEqual(b["lamn"], L["lam_min_last"] - 1e-9)   # чистовой — от 1,05
+
+    def test_mill_limits_route(self):
+        from core.optimize import optimize
+        from core.mills import DRIVE_INDIVIDUAL
+        mill = dict(name="M", drive=DRIVE_INDIVIDUAL, drums=10, drum_d=560, v_max=20,
+                    p_motor=31.5, eta=85, kin=None)
+        b = optimize(self.G, 7.85, 1.2, mill=mill)
+        self.assertIsNotNone(b)
+        r = plan_route(b["params"], self.G, mill)
+        self.assertTrue(r["mill"]["fits"])
+        self.assertLessEqual(r["mill"]["max_load"], 100 + 1e-6)        # ни один барабан не перегружен
+        free = optimize(self.G, 7.85, 1.2)
+        self.assertGreaterEqual(b["conversion"], free["conversion"] - 1e-6)
+        # на стане из 4 барабанов этапы короче — нужны отжиги или маршрута нет
+        short = optimize(self.G, 7.85, 1.2, mill=dict(mill, drums=4, p_motor=None))
+        if short is not None:
+            r = plan_route(short["params"], self.G, dict(mill, drums=4, p_motor=None))
+            self.assertTrue(r["mill"]["fits"])
+
+    def test_book_batch_and_actual_life(self):
+        from core.dies import actual_life, book_batch
+        j = [dict(id="1", type="ВК6", used=10.0, status="в работе"),
+             dict(id="2", type="ВК6", used=30.0, status="снята"),
+             dict(id="3", type="ПКА", used=50.0, status="снята")]
+        self.assertEqual(book_batch(j, ["1", "2", "9"], 2.5, "партия 7"), ["2", "9"])
+        self.assertAlmostEqual(j[0]["used"], 12.5)
+        self.assertEqual(j[0]["log"][0]["t"], 2.5)
+        self.assertEqual(j[1]["used"], 30.0)                          # снятая не меняется
+        self.assertEqual(actual_life(j), (40.0, 2))
+        self.assertEqual(actual_life(j, "ВК6"), (30.0, 1))
+        self.assertIsNone(actual_life(j[:1]))
 
     def test_too_slow_is_infeasible(self):
         from core.optimize import optimize
