@@ -11,9 +11,9 @@ from core.util import fmt, g_per_m
 # Параметры маршрута: всё, что нужно для расчёта и сохраняется в техкарте
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
-              "dcool", "lams")
-# значения для техкарт, сохранённых до появления расчёта нагрева
-THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0)
+              "dcool", "lams", "ys", "sq")
+# значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
+THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0)
 
 
 def plan_route(p, group="", mill=None):
@@ -25,7 +25,8 @@ def plan_route(p, group="", mill=None):
                                              p["lmax"], p["v"], p["drum"], p.get("v_stages"),
                                              p.get("lams"))
     forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
-                          eps_ref=eps_from_reduction(p["redref"]))
+                          ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
+                          back=p["sq"])
     gpm = g_per_m(p["rho"], p["dk"])
     weak = [r["i"] for r, f in zip(rows, forces) if f["gamma"] < p["gmin"]]
     over = [r["i"] for r in rows if r["over"]]

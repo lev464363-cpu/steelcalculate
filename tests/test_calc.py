@@ -156,6 +156,31 @@ class TestForces(unittest.TestCase):
         g2 = min(f["gamma"] for f in route_forces(rows, 6, 0.10, 560, 1050, 0.5))
         self.assertLess(g2, g1)
 
+    def test_back_tension(self):
+        _, _, rows, _ = build_route(5.5, 1.2, 14, 1.15, 96, 1.35, 15, None)
+        f0 = route_forces(rows, 6, 0.05, 560, 1050, 0.5)
+        f1 = route_forces(rows, 6, 0.05, 560, 1050, 0.5, back=100)
+        b = 0.05 / math.radians(6)
+        self.assertAlmostEqual(f1[0]["sig_d"], f0[0]["sig_d"], places=9)   # с размотчика
+        for r, a, c in zip(rows[1:], f0[1:], f1[1:]):
+            self.assertAlmostEqual(c["sig_d"], a["sig_d"] + 100 * r["lam"] ** -b, places=9)
+            self.assertLess(c["gamma"], a["gamma"])
+            self.assertAlmostEqual(c["sig_heat"], c["sig_d"] - 100, places=9)
+        # предыдущий барабан разгружен, суммарная мощность чуть меньше
+        self.assertLess(f1[0]["power"], f0[0]["power"])
+        self.assertAlmostEqual(f1[-1]["power"], f1[-1]["P"] * rows[-1]["v"] / 1000, places=9)
+        self.assertLess(sum(f["power"] for f in f1), sum(f["power"] for f in f0))
+        # после отжига — новый прогон с размотчика, противонатяжения нет
+        _, _, rows, anneals = build_route(5.5, 1.2, 14, 1.15, 70, 1.35, 15, None)
+        self.assertGreater(anneals, 0)
+        f2 = route_forces(rows, 6, 0.05, 560, 1050, 0.5, back=100)
+        self.assertTrue(all(f["sig_q"] == 0 for r, f in zip(rows, f2) if r["anneal"]))
+        # нулевое противонатяжение и σт/σв по умолчанию — прежний расчёт
+        res = plan_route(BASE)
+        same = plan_route(dict(BASE, sq=0.0, ys=0.85))
+        self.assertEqual(res["gamma_min"], same["gamma_min"])
+        self.assertLess(plan_route(dict(BASE, sq=80))["t_max"], res["t_max"] + 1e-9)
+
 
 class TestCoating(unittest.TestCase):
     def test_copper_share(self):
@@ -178,7 +203,7 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertEqual(len(res["rows"]), 14)
         self.assertAlmostEqual(res["productivity"], g_per_m(7.85, 1.2) * 15 * 3.6, places=6)
         self.assertEqual(res["warnings"], [])
-        self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams"})
+        self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)
