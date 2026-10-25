@@ -3,5 +3,7 @@ __pycache__/
 filery.json
 tekhkarty.json
 stany.json
-*.zip*.json.tmp
+dopuski.json
+*.zip
+*.json.tmp
 *.повреждён-*.json

@@ -284,6 +284,37 @@ class TestPlanAndCards(unittest.TestCase):
 
 
 class TestTolerance(unittest.TestCase):
+    def test_custom_ntd(self):
+        import tempfile
+        from core import tolerance as tl
+        rows = [dict(ntd="ТУ 1211-001", d=1.2, upper=0, lower=-0.05,
+                     note="п. 3.2"),
+                dict(ntd="ТУ 1211-001", d=1.0, upper=0.02, lower=-0.04, note="")]
+        old = tl._custom
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "dopuski.json")
+                saved = tl.save_custom(rows, path)
+                self.assertEqual([r["d"] for r in saved], [1.0, 1.2])       # по диаметру
+                with open(path, encoding="utf-8") as fh:
+                    self.assertIn("п. 3.2", fh.read())
+            self.assertIn("ТУ 1211-001", tl.all_standards())
+            self.assertEqual(tl.tolerance("ТУ 1211-001", 1.2), (0.0, -0.05))
+            self.assertEqual(tl.tolerance("ТУ 1211-001", 1.0), (0.02, -0.04))
+            self.assertEqual(tl.custom_row("ТУ 1211-001", 1.2)["note"], "п. 3.2")
+            with self.assertRaises(InputError):                          # только точный диаметр
+                tl.tolerance("ТУ 1211-001", 1.1)
+            self.assertEqual(tl.tolerance(STANDARDS[0], 1.2), (0.0, -0.09))  # встроенные — как были
+            for bad in (dict(ntd="", d=1, upper=0, lower=-0.1),
+                        dict(ntd="X", d=1, upper=-0.1, lower=0),
+                        dict(ntd="X", d=0.05, upper=0, lower=-0.1)):
+                with self.assertRaises(InputError):
+                    tl.check_custom([bad])
+            with self.assertRaises(InputError):                          # повтор диаметра
+                tl.check_custom([rows[1], dict(rows[1], note="другая")])
+        finally:
+            tl._custom = old
+
     def test_gost2246(self):
         self.assertEqual(tolerance(STANDARDS[0], 1.2), (0.0, -0.09))
         self.assertEqual(tolerance(STANDARDS[0], 1.6), (0.0, -0.12))

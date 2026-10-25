@@ -9,12 +9,13 @@ from core.data import DIE_TYPES
 from core.dies import actual_life
 from core.paths import app_dir
 from core.storage import DamagedFile, load_list, save_list
-from core.tolerance import STANDARDS, check_measure, tolerance
+from core.tolerance import all_standards, check_measure, tolerance
 from core.util import InputError, fmt
 from ui.theme import T
 from ui.widgets import (FieldError, NumField, Page, button, fill_table, label, make_table, panel,
                         tab_box)
 from ui.anim import AnimatedTabWidget
+from ui.pages.tolerance import refill
 
 
 class DiesPage(Page):
@@ -49,7 +50,7 @@ class DiesPage(Page):
         g.addWidget(QLabel("Ресурс, т"), 2, 0)
         g.addWidget(self.f_limit, 2, 1)
         self.f_tol = QComboBox()
-        self.f_tol.addItems(["без допуска"] + STANDARDS)
+        self.f_tol.addItems(["без допуска"] + all_standards())
         g.addWidget(QLabel("Допуск на проволоку"), 2, 2)
         g.addWidget(self.f_tol, 2, 3)
         add = button("Добавить фильеру", primary=True)
@@ -88,6 +89,7 @@ class DiesPage(Page):
     def on_show(self):
         # журнал мог измениться в «Маршруте» (запись партии) — читаем заново, чтобы не затереть
         self.dies = self.load()
+        refill(self.f_tol, all_standards(), first=["без допуска"])
         self.refresh()
 
     def load(self):

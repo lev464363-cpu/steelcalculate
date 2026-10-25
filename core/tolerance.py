@@ -5,7 +5,15 @@
 GB/T 14957-1994 (табл. 1, п. 3.1.2–3.1.3) — китайская сварочная проволока 1,6–6,0 мм;
 GB/T 905-1994 — китайский холоднотянутый круг 3–80 мм, поля h8–h12.
 Числа полей h — по ISO 286 (совпадают с табл. 1 ГОСТ 7417-75: 3,0 мм — −0,025/−0,040/−0,060/−0,100;
-3,1 мм — −0,030/−0,048/−0,075/−0,120)."""
+3,1 мм — −0,030/−0,048/−0,075/−0,120).
+
+Свои НТД (ТУ, стандарты предприятия, договоры) вводятся вручную в «Волочение → Свои допуски» и
+хранятся в dopuski.json рядом с программой: на каждый диаметр — своя строка с верхним и нижним
+отклонением и примечанием. Для своих НТД допуск берётся только по точному диаметру."""
+import os
+
+from core.paths import app_dir
+from core.storage import DamagedFile, load_list, save_list
 from core.util import InputError, fmt
 
 # ГОСТ 2246-70, таблица 1: номинал → нижнее отклонение, мм (верхнее — 0)
@@ -69,8 +77,99 @@ def _it(q, d, lo, hi, what):
     raise InputError(f"{what}: диаметр вне таблицы.")
 
 
+CUSTOM_FILE = "dopuski.json"
+CUSTOM_KEYS = ("ntd", "d", "upper", "lower", "note")
+_custom = None          # строки своих НТД; None — ещё не прочитаны
+
+
+def custom_path():
+    return os.path.join(app_dir(), CUSTOM_FILE)
+
+
+def custom_rows():
+    """Свои НТД (читаются один раз; повреждённый файл здесь только пропускается — отложить его
+    в резервную копию и сообщить пользователю должен раздел «Свои допуски»)."""
+    global _custom
+    if _custom is None:
+        try:
+            _custom = check_custom(load_list(custom_path(), quarantine=False))
+        except (DamagedFile, InputError, OSError):
+            _custom = []
+    return _custom
+
+
+def set_custom(rows):
+    global _custom
+    _custom = list(rows)
+
+
+def check_custom(rows):
+    """Проверяет строки своих НТД и возвращает их отсортированными по НТД и диаметру.
+    InputError называет номер строки (с 1) и что в ней не так."""
+    out, seen = [], set()
+    for i, r in enumerate(rows, 1):
+        ntd = str(r.get("ntd", "")).strip()
+        if not ntd:
+            raise InputError(f"Строка {i}: не указано название НТД.")
+        try:
+            d, up, low = float(r["d"]), float(r["upper"]), float(r["lower"])
+        except (KeyError, TypeError, ValueError):
+            raise InputError(f"Строка {i} ({ntd}): диаметр и отклонения должны быть числами.")
+        if d <= 0:
+            raise InputError(f"Строка {i} ({ntd}): диаметр должен быть больше нуля.")
+        if up <= low:
+            raise InputError(f"Строка {i} ({ntd}, {fmt(d, 2)} мм): верхнее отклонение должно быть "
+                             f"больше нижнего (например, 0 и −0,09).")
+        if d + low <= 0:
+            raise InputError(f"Строка {i} ({ntd}, {fmt(d, 2)} мм): нижнее отклонение больше "
+                             f"самого диаметра.")
+        key = (ntd.lower(), round(d, 6))
+        if key in seen:
+            raise InputError(f"Строка {i}: диаметр {fmt(d, 2)} мм для «{ntd}» уже есть.")
+        seen.add(key)
+        out.append(dict(ntd=ntd, d=d, upper=up, lower=low, note=str(r.get("note", "")).strip()))
+    return sorted(out, key=lambda r: (r["ntd"].lower(), r["d"]))
+
+
+def save_custom(rows, path=None):
+    rows = check_custom(rows)
+    save_list(rows, path or custom_path())
+    set_custom(rows)
+    return rows
+
+
+def custom_names():
+    names = []
+    for r in custom_rows():
+        if r["ntd"] not in names:
+            names.append(r["ntd"])
+    return names
+
+
+def all_standards():
+    """Встроенные стандарты и свои НТД — для выпадающих списков."""
+    return STANDARDS + [n for n in custom_names() if n not in STANDARDS]
+
+
+def custom_row(standard, d):
+    """Строка своего НТД для диаметра d или None, если такого НТД нет.
+    InputError — НТД есть, а строки для этого диаметра нет."""
+    rows = [r for r in custom_rows() if r["ntd"] == standard]
+    if not rows:
+        return None
+    for r in rows:
+        if abs(r["d"] - d) < 1e-6:
+            return r
+    sizes = ", ".join(fmt(r["d"], 2) for r in rows)
+    raise InputError(f"В «{standard}» нет строки для диаметра {fmt(d, 2)} мм. Есть: {sizes}. "
+                     f"Добавь её в «Свои допуски».")
+
+
 def tolerance(standard, d):
     """Возвращает (верхнее, нижнее) отклонение в мм."""
+    row = custom_row(standard, d)          # свои НТД — первыми
+    if row is not None:
+        return row["upper"], row["lower"]
     standard = LEGACY.get(standard, standard)
     if standard.startswith("ГОСТ 2246-70, для сварки"):
         return 0.0, -_from_table(GOST2246_WELD, d, "сварочной проволоки", False)
