@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+filery.json
+tekhkarty.json
+stany.json
+*.zip
