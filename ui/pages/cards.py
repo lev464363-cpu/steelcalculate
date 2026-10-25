@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QMessageBox, QTab
 from core.cards import compare, load_cards, save_cards
 from core.cost import cost_for_route
 from core.mills import find_mill, load_mills
+from core.storage import DamagedFile
 from core.route_plan import plan_route
 from core.util import InputError, fmt
 from ui.pdf import save_card_pdf
@@ -72,6 +73,9 @@ class CardsPage(Page):
         self.results, rows, colors = [], [], []
         try:
             mills = load_mills()
+        except DamagedFile as e:
+            mills = []
+            self.status.setText(f"{self.status.text()}\n{e}".strip())
         except (OSError, ValueError):
             mills = []
         for c in self.cards:

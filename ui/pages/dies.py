@@ -1,5 +1,4 @@
 """Раздел «Журнал фильер»: наработка и износ, хранение в filery.json."""
-import json
 import os
 from datetime import date
 
@@ -8,6 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, Q
 
 from core.data import DIE_TYPES
 from core.paths import app_dir
+from core.storage import DamagedFile, load_list, save_list
 from core.tolerance import STANDARDS, check_measure, tolerance
 from core.util import InputError, fmt
 from ui.theme import T
@@ -84,19 +84,24 @@ class DiesPage(Page):
 
     def load(self):
         try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except FileNotFoundError:
+            return load_list(self.path)
+        except DamagedFile as e:
+            QMessageBox.warning(self, "Журнал фильер", str(e))
             return []
-        except (OSError, json.JSONDecodeError):
+        except OSError as e:
+            # файл не открылся (занят, нет прав) — работаем без него, но поверх не пишем
+            self.readonly = True
             QMessageBox.warning(self, "Журнал фильер",
-                                "Файл журнала повреждён или недоступен, начинаю с пустого.")
+                                f"Не удалось открыть журнал, изменения не будут сохранены:\n{e}")
             return []
 
     def save(self):
+        if getattr(self, "readonly", False):
+            QMessageBox.warning(self, "Журнал фильер", "Журнал не был прочитан при запуске — "
+                                "сохранение отключено, чтобы не затереть файл. Перезапусти программу.")
+            return
         try:
-            with open(self.path, "w", encoding="utf-8") as fh:
-                json.dump(self.dies, fh, ensure_ascii=False, indent=2)
+            save_list(self.dies, self.path)
         except OSError as e:
             QMessageBox.warning(self, "Журнал фильер", f"Не удалось сохранить файл:\n{e}")
 

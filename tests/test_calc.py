@@ -200,6 +200,33 @@ class TestPlanAndCards(unittest.TestCase):
             self.assertEqual(load_cards(os.path.join(tmp, "none.json")), [])
         self.assertIn("1К89М", default_name("Группа (x)", BASE, "1К89М"))
 
+    def test_damaged_user_file_is_kept(self):
+        """Повреждённый файл не теряется: уходит в резервную копию, запись — атомарная."""
+        import tempfile
+        from core.storage import DamagedFile, load_list, save_list
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stany.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('[{"name": "1К89М"} {"name": "без запятой"}]')
+            with self.assertRaises(DamagedFile):
+                load_list(path, quarantine=False)
+            self.assertTrue(os.path.exists(path))          # только чтение — файл на месте
+            with self.assertRaises(DamagedFile):
+                load_list(path)
+            self.assertFalse(os.path.exists(path))
+            backups = [f for f in os.listdir(tmp) if "повреждён" in f]
+            self.assertEqual(len(backups), 1)
+            with open(os.path.join(tmp, backups[0]), encoding="utf-8") as fh:
+                self.assertIn("без запятой", fh.read())
+            self.assertEqual(load_list(path), [])
+            save_list([{"name": "новый"}], path)
+            self.assertEqual(load_list(path), [{"name": "новый"}])
+            self.assertEqual(sorted(os.listdir(tmp)), sorted([backups[0], "stany.json"]))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"name": "не список"}')
+            with self.assertRaises(DamagedFile):
+                load_list(path)
+
     def test_compare_marks_best(self):
         c1 = dict(name="14", mill="1К89М", group="g", params=BASE)
         c2 = dict(name="18", mill="1К89М", group="g", params=dict(BASE, n=18))

@@ -1,9 +1,9 @@
 """Технологические карты: сохранённые маршруты в файле tekhkarty.json рядом с программой."""
-import json
 import os
 from datetime import datetime
 
 from core.paths import app_dir
+from core.storage import load_list, save_list
 from core.util import fmt
 
 CARDS_FILE = "tekhkarty.json"
@@ -14,18 +14,12 @@ def cards_path():
 
 
 def load_cards(path=None):
-    path = path or cards_path()
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except FileNotFoundError:
-        return []
+    """Повреждённый файл откладывается в резервную копию (DamagedFile), см. core.storage."""
+    return load_list(path or cards_path())
 
 
 def save_cards(cards, path=None):
-    with open(path or cards_path(), "w", encoding="utf-8") as fh:
-        json.dump(cards, fh, ensure_ascii=False, indent=2)
+    save_list(cards, path or cards_path())
 
 
 def default_name(group, params, mill):

@@ -9,6 +9,7 @@ from core.data import GROUPS
 from core.cards import default_name, load_cards, save_cards, upsert_card
 from core.cost import cost_for_route
 from core.mills import find_mill, load_mills
+from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
 from core.util import InputError, fmt
@@ -375,6 +376,9 @@ class RoutePage(Page):
         """Обновляет список профилей станов, сохраняя введённое название."""
         try:
             self.mills = load_mills()
+        except DamagedFile as e:
+            self.mills = []
+            QMessageBox.warning(self, "Профили станов", str(e))
         except (OSError, ValueError):
             self.mills = []
         text = self.mill.currentText()
