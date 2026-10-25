@@ -483,7 +483,15 @@ class TestOptimizer(unittest.TestCase):
         self.assertLessEqual(b["t_max"], L["t_max"] + 1e-6)
         self.assertLessEqual(b["t_wind"], L["t_wind"] + 1e-6)
         self.assertLessEqual(b["v"], L["v_max"] + 1e-9)
+        self.assertTrue(all(L["v_min"] - 1e-9 <= v <= L["v_max"] + 1e-9 for v in b["v_stages"]))
         self.assertGreaterEqual(b["lamn"], L["lam_min_last"] - 1e-9)   # чистовой — от 1,05
+
+    def test_too_slow_is_infeasible(self):
+        from core.optimize import optimize
+        # на стане без запаса мощности этап не тянется даже на 5 м/с — маршрута нет
+        self.assertIsNone(optimize(self.G, 7.85, 1.2, cost=dict(p_inst=5)))
+        self.assertIsNotNone(optimize(self.G, 7.85, 1.2, cost=dict(p_inst=5),
+                                      limits=dict(v_min=0.2)))
 
     def test_better_cooling_is_cheaper(self):
         from core.optimize import optimize

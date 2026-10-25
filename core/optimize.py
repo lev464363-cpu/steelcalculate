@@ -19,7 +19,8 @@ DEFAULT_COST = dict(shifts=2, shift_h=12, days=250, ku_pct=75, yield_pct=97, p_i
                     lube_price=250, anneal_cost_t=3000, other_t=300, mill_price=45e6,
                     mill_years=10, repair_pct=4, energy_method=ENERGY_BY_ROUTE, copper=False,
                     full=False)
-DEFAULT_LIMITS = dict(gmin=1.4, t_max=180.0, t_wind=100.0, v_max=30.0, n_max=24, lam_min=1.10,
+# скорость на финише этапа — в рабочем диапазоне завода 5–15 м/с
+DEFAULT_LIMITS = dict(gmin=1.4, t_max=180.0, t_wind=100.0, v_min=5.0, v_max=15.0, n_max=24, lam_min=1.10,
                       lam_min_last=1.05,
                       ratios=(1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3))
 # Точка калибровки охлаждения: 50 % перегрева снимается при 15 м/с на проволоке 1,2 мм (условно)
@@ -86,13 +87,16 @@ def optimize(group, rho, dk, d0=5.5, cost=None, thermal=None, limits=None, alpha
                 hi = min(lim["v_max"], v_pow)
                 why = "скорость стана" if lim["v_max"] <= v_pow else "мощность стана"
                 last = s_i == m - 1
+                if hi < lim["v_min"]:          # не тянется даже на минимальной скорости
+                    feasible = False
+                    break
 
                 def ok(v):
                     vs = list(speeds)
                     vs[s_i] = v
                     return _stage_ok(dict(p, v=vs[-1], v_stages=vs), group, s_i, last, lim)
                 if not ok(hi):
-                    lo = 0.2
+                    lo = lim["v_min"]
                     if not ok(lo):
                         feasible = False
                         break

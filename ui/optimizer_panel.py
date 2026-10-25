@@ -41,13 +41,15 @@ def build(page, tabs, index):
     page.o_rho = NumField("Плотность")
     page.o_diams = QLineEdit("0,8; 1,0; 1,2; 1,6; 2,0; 2,5; 3,0; 4,0")
     page.o_d0 = NumField("Исходный диаметр", "5,5")
+    page.o_vmin = NumField("Мин. скорость", fmt(DEFAULT_LIMITS["v_min"], 0))
     page.o_vmax = NumField("Макс. скорость", fmt(DEFAULT_LIMITS["v_max"], 0))
     page.o_gmin = NumField("Мин. запас прочности", "1,4")
     page.o_tmax = NumField("Макс. температура", fmt(DEFAULT_LIMITS["t_max"], 0))
     page.o_twind = NumField("Температура намотки", fmt(DEFAULT_LIMITS["t_wind"], 0))
     page.o_lmin = NumField("Мин. вытяжка за проход", "1,10")
     grid = [("Плотность, г/см³", page.o_rho), ("Исходный диаметр, мм", page.o_d0),
-            ("Готовые диаметры, мм", page.o_diams), ("Макс. скорость стана, м/с", page.o_vmax),
+            ("Готовые диаметры, мм", page.o_diams), ("Мин. скорость стана, м/с", page.o_vmin),
+            ("Макс. скорость стана, м/с", page.o_vmax),
             ("Минимальный запас прочности", page.o_gmin), ("Макс. температура проволоки, °C", page.o_tmax),
             ("Макс. температура на намотке, °C", page.o_twind),
             ("Мин. вытяжка за проход", page.o_lmin)]
@@ -56,7 +58,7 @@ def build(page, tabs, index):
         g.addWidget(w, 1 + i // 2, (i % 2) * 2 + 1)
     page.o_from_route = QCheckBox("Цены, охлаждение и трение — из «Маршрута»")
     page.o_from_route.setChecked(True)
-    g.addWidget(page.o_from_route, 6, 0, 1, 4)
+    g.addWidget(page.o_from_route, 7, 0, 1, 4)
     bar = QHBoxLayout()
     run = button("Рассчитать", primary=True)
     open_btn = button("Открыть выбранный в маршруте")
@@ -110,9 +112,11 @@ def run_opt(page):
             raise InputError("Готовые диаметры — числа через точку с запятой.")
         if not diams or any(not 0 < d < d0 for d in diams):
             raise InputError("Готовые диаметры должны быть меньше исходного.")
-        limits = dict(v_max=page.o_vmax.value(), gmin=page.o_gmin.value(),
+        limits = dict(v_min=page.o_vmin.value(), v_max=page.o_vmax.value(), gmin=page.o_gmin.value(),
                       t_max=page.o_tmax.value(), t_wind=page.o_twind.value(),
                       lam_min=page.o_lmin.value())
+        if limits["v_min"] >= limits["v_max"]:
+            raise FieldError(page.o_vmin, "Минимальная скорость должна быть меньше максимальной.")
         if limits["lam_min"] <= 1:
             raise FieldError(page.o_lmin, "Минимальная вытяжка должна быть больше 1.")
         cost, thermal, alpha, mu = _route_conditions(page)
