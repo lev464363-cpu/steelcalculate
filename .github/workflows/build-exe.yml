@@ -1,0 +1,23 @@
+name: Сборка exe
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Проверка расчётов
+        run: python tests/test_calc.py
+      - name: Сборка
+        run: python build_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kalkulyator-volocheniya-windows
+          path: dist/

@@ -7,7 +7,7 @@ from core.util import InputError, fmt, num
 from ui.theme import sized
 from ui.widgets import FieldError, NumField, Page, button, label, panel
 
-DEFAULT_MOTOR_KW = "31,5"     # двигатель одного барабана на станах завода, кВт
+DEFAULT_MOTOR_KW = "52"       # двигатель одного барабана на станах завода, кВт
 
 
 class MillsPage(Page):

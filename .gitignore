@@ -7,3 +7,5 @@ dopuski.json
 *.zip
 *.json.tmp
 *.повреждён-*.json
+build/
+dist/

@@ -542,7 +542,7 @@ class TestOptimizer(unittest.TestCase):
         from core.optimize import optimize
         from core.mills import DRIVE_INDIVIDUAL
         mill = dict(name="M", drive=DRIVE_INDIVIDUAL, drums=10, drum_d=560, v_max=20,
-                    p_motor=31.5, eta=85, kin=None)
+                    p_motor=52, eta=85, kin=None)
         b = optimize(self.G, 7.85, 1.2, mill=mill)
         self.assertIsNotNone(b)
         r = plan_route(b["params"], self.G, mill)
