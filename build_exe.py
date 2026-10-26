@@ -9,10 +9,21 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME = "Калькулятор волочения"
 PYINSTALLER = "pyinstaller==6.22.3"
+
+
+def pack(dist, zip_path):
+    """Архив готовой папки для релиза; имена файлов — в UTF-8, кириллица в Проводнике
+    не ломается."""
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(dist):
+            for f in files:
+                full = os.path.join(root, f)
+                zf.write(full, os.path.relpath(full, dist))
 
 
 def main():

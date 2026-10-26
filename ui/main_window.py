@@ -23,7 +23,7 @@ from ui.theme import (FONT, FONT_MAX, FONT_MIN, THEMES, T, build_qss, refresh_gl
                       sized)
 from ui.anim import ANIM, SECTION_MS, AnimatedTabWidget, NavIndicator, crossfade
 
-APP_TITLE = "Калькулятор волочения — v8.2"
+APP_TITLE = "Калькулятор волочения — v1.0"
 
 # Разделы бокового меню и их подвкладки. Новая подвкладка добавляется одной строкой.
 SECTIONS = [
