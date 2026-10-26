@@ -9,6 +9,7 @@ from core.data import GROUPS
 from core.cards import default_name, load_cards, save_cards, upsert_card
 from core.cost import cost_for_route
 from core.mills import find_mill, load_mills
+from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
 from core.util import InputError, fmt
@@ -16,7 +17,7 @@ from ui import cost_panel, dies_panel, heat_panel
 from ui.chart import RouteChart
 from ui.draft_editor import DraftEditor
 from ui.export import save_table
-from ui.pdf import save_card_pdf
+from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px, sized
 from ui.widgets import (Card, FieldError, Page, button, fill_table, label, make_table, panel,
                         tab_box, tab_form)
@@ -99,6 +100,10 @@ class RoutePage(Page):
         self.drum.setPlaceholderText("необязательно")
         self.alpha = field("Полуугол волоки, °", "6", "route/alpha")
         self.mu = field("Коэффициент трения", "0,05", "route/mu")
+        self.sq = field("Противонатяжение, МПа", "0", "route/sq")
+        note(label("Натяжение проволоки перед волокой (кроме первого прохода этапа). Повышает "
+                   "напряжение волочения и снижает запас прочности, но разгружает волоку и "
+                   "предыдущий барабан. 0 — без противонатяжения.", "note", True))
         note(label("Нагрев и охлаждение", "section"))
         self.t0 = field("Температура заготовки, °C", "20", "route/t0")
         self.tw = field("Температура охлаждающей воды, °C", "25", "route/tw")
@@ -117,6 +122,12 @@ class RoutePage(Page):
         self.sigf = field("Прочность после обжатия, МПа", "", "route/sigf")
         self.redref = field("…при суммарном обжатии, %", "", "route/redref")
         self.nh = field("Показатель упрочнения n", "", "route/nh")
+        self.sig_ann = field("Прочность после отжига, МПа", "", "route/sig_ann")
+        self.sig_ann.setPlaceholderText("как у заготовки")
+        self.ys = field("Отношение σт/σв", "0,85", "route/ys")
+        note(label("Предел текучести к прочности: ≈0,85 для холоднотянутой проволоки, 0,6–0,75 для "
+                   "отожжённой катанки, 0,9–0,95 для сильно нагартованной. Уточняется по практике.",
+                   "note", True))
         self.cp = field("Теплоёмкость, Дж/(кг·К)", "", "route/cp")
         self.hsrc = label("", "note", True)
         note(self.hsrc)
@@ -126,6 +137,10 @@ class RoutePage(Page):
         self.limit = field("Предел обжатия до отжига, %", "", "route/limit")
         self.lmax = field("Макс. вытяжка за проход", "", "route/lmax")
         self.gmin = field("Минимальный запас прочности", "1,4", "route/gmin")
+        self.sig_min = field("Прочность готовой по ГОСТ/ТУ: от, МПа", "", "route/sig_min")
+        self.sig_max = field("…до, МПа", "", "route/sig_max")
+        for w in (self.sig_min, self.sig_max):
+            w.setPlaceholderText("не задано")
         self.src = label("", "note", True)
         note(self.src)
 
@@ -171,7 +186,8 @@ class RoutePage(Page):
         box.addWidget(self.table, 1)
         box.addWidget(label("* от катанки или последнего отжига. Жёлтым — отжиг перед проходом, "
                             "красным — превышена вытяжка или мал запас прочности. Усилие — по "
-                            "формуле Зибеля, без противонатяжения.", "note", True))
+                            "формуле Зибеля с противонатяжением (если задано); мощность — на "
+                            "барабане, за вычетом помощи от противонатяжения следующего прохода.", "note", True))
         cost_panel.build_results(self, results)
         heat_panel.build_results(self, results)
         dies_panel.build_results(self, results)
@@ -179,8 +195,11 @@ class RoutePage(Page):
         bar = QHBoxLayout()
         self.save_btn = button("Сохранить техкарту", primary=True)
         self.pdf_btn = button("В PDF")
+        self.op_btn = button("Карта оператора")
+        self.op_btn.setToolTip("Маршрутная карта для оператора стана: барабаны, волоки и номера "
+                               "фильер из журнала, скорости и графы для замеров.")
         self.export_btn = button("Экспорт в Excel")
-        for b in (self.save_btn, self.pdf_btn, self.export_btn):
+        for b in (self.save_btn, self.pdf_btn, self.op_btn, self.export_btn):
             bar.addWidget(b)
         bar.addStretch()
         right.addLayout(bar)
@@ -193,6 +212,7 @@ class RoutePage(Page):
         self.export_btn.clicked.connect(self.export)
         self.save_btn.clicked.connect(self.save_card)
         self.pdf_btn.clicked.connect(self.to_pdf)
+        self.op_btn.clicked.connect(self.to_operator)
         self.texts["route/mill"] = self.mill.lineEdit()
         self.manual = None                # ручная раскладка из редактора обжатий
         self.draft.dragged.connect(self.on_drag)
@@ -241,6 +261,7 @@ class RoutePage(Page):
         mu = self.mu.value(allow_zero=True)
         if mu > 0.3:
             raise FieldError(self.mu, "Коэффициент трения при волочении обычно 0,02–0,1.")
+        sq = self.sq.value(allow_zero=True)
         gmin = self.gmin.value()
         if gmin <= 1:
             raise FieldError(self.gmin, "Запас прочности должен быть больше 1.")
@@ -255,6 +276,18 @@ class RoutePage(Page):
         nh = self.nh.value()
         if nh > 1.5:
             raise FieldError(self.nh, "Показатель упрочнения обычно 0,2–0,8.")
+        sig_ann = self.sig_ann.value(optional=True)
+        sig_min = self.sig_min.value(optional=True)
+        sig_max = self.sig_max.value(optional=True)
+        if sig_min is not None and sig_max is not None and sig_min >= sig_max:
+            raise FieldError(self.sig_max, "Верхняя граница прочности должна быть больше нижней.")
+        ys = self.ys.value()
+        if not 0.4 <= ys <= 1:
+            raise FieldError(self.ys, "Отношение σт/σв — от 0,4 до 1 (обычно 0,6–0,95).")
+        if sq >= 0.5 * ys * sig0:
+            raise FieldError(self.sq, "Противонатяжение слишком велико: оно должно быть заметно "
+                                      "меньше предела текучести заготовки (обычно до 10–30 % от "
+                                      "напряжения волочения).")
         rho = self.rho.value()
         t0 = self.t0.value(allow_zero=True)
         tw = self.tw.value(allow_zero=True)
@@ -266,7 +299,8 @@ class RoutePage(Page):
         dcool = self.dcool.value()
         return dict(vcool=vcool, dcool=dcool, d0=d0, dk=dk, ratio=ratio, lmax=lmax, v=v, drum=drum, limit=limit,
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
-                    redref=redref, t0=t0, tw=tw, cool=cool, cp=cp)
+                    redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
+                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max)
 
     def recalc(self):
         p = self._inputs()
@@ -375,6 +409,9 @@ class RoutePage(Page):
         """Обновляет список профилей станов, сохраняя введённое название."""
         try:
             self.mills = load_mills()
+        except DamagedFile as e:
+            self.mills = []
+            QMessageBox.warning(self, "Профили станов", str(e))
         except (OSError, ValueError):
             self.mills = []
         text = self.mill.currentText()
@@ -485,6 +522,14 @@ class RoutePage(Page):
         group, mill = self.group.currentText(), self.mill.currentText().strip()
         save_card_pdf(self, default_name(group, p, mill), mill, group, self.p, self.res)
 
+    def to_operator(self):
+        p = self.current_params()
+        if p is None:
+            return
+        group, mill = self.group.currentText(), self.mill.currentText().strip()
+        save_operator_pdf(self, default_name(group, p, mill), mill, group, self.p, self.res,
+                          self.die_plan)
+
     def load_card(self, card):
         """Подставляет параметры техкарты в поля (группа первой: она перезаписывает пределы)."""
         if self.group.findText(card["group"]) >= 0:
@@ -499,7 +544,8 @@ class RoutePage(Page):
                  "lmax": self.lmax, "gmin": self.gmin, "rho": self.rho, "sig0": self.sig0,
                  "sigf": self.sigf, "nh": self.nh, "redref": self.redref, "t0": self.t0,
                  "tw": self.tw, "cool": self.cool, "cp": self.cp, "vcool": self.vcool,
-                 "dcool": self.dcool}
+                 "dcool": self.dcool, "ys": self.ys, "sq": self.sq,
+                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max}
         for key, field in names.items():
             if key not in card["params"]:       # старые техкарты: оставляем текущее значение
                 continue
@@ -521,7 +567,11 @@ class RoutePage(Page):
                 ("Коэффициент трения", p["mu"]), ("Мин. запас прочности", p["gmin"]),
                 ("Прочность заготовки на разрыв, МПа", p["sig0"]), ("Прочность после обжатия, МПа", p["sigf"]),
                 ("…при суммарном обжатии, %", p["redref"]),
-                ("Показатель упрочнения n", p["nh"])]
+                ("Показатель упрочнения n", p["nh"]), ("Отношение σт/σв", p["ys"]),
+                ("Противонатяжение, МПа", p["sq"]),
+                ("Прочность после отжига, МПа", p["sig_ann"] if p["sig_ann"] else "как у заготовки"),
+                ("Прочность готовой по ГОСТ/ТУ, МПа",
+                 " – ".join(fmt(x, 0) if x else "—" for x in (p["sig_min"], p["sig_max"])))]
         rows, fills = [], []
         for r, f in zip(self.rows, self.forces):
             rows.append([r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),

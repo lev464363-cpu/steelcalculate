@@ -1,5 +1,4 @@
 """Раздел «Журнал фильер»: наработка и износ, хранение в filery.json."""
-import json
 import os
 from datetime import date
 
@@ -7,13 +6,16 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, Q
                                QLabel, QLineEdit, QMessageBox)
 
 from core.data import DIE_TYPES
+from core.dies import actual_life
 from core.paths import app_dir
-from core.tolerance import STANDARDS, check_measure, tolerance
+from core.storage import DamagedFile, load_list, save_list
+from core.tolerance import all_standards, check_measure, tolerance
 from core.util import InputError, fmt
 from ui.theme import T
 from ui.widgets import (FieldError, NumField, Page, button, fill_table, label, make_table, panel,
                         tab_box)
 from ui.anim import AnimatedTabWidget
+from ui.pages.tolerance import refill
 
 
 class DiesPage(Page):
@@ -48,7 +50,7 @@ class DiesPage(Page):
         g.addWidget(QLabel("Ресурс, т"), 2, 0)
         g.addWidget(self.f_limit, 2, 1)
         self.f_tol = QComboBox()
-        self.f_tol.addItems(["без допуска"] + STANDARDS)
+        self.f_tol.addItems(["без допуска"] + all_standards())
         g.addWidget(QLabel("Допуск на проволоку"), 2, 2)
         g.addWidget(self.f_tol, 2, 3)
         add = button("Добавить фильеру", primary=True)
@@ -70,6 +72,8 @@ class DiesPage(Page):
         bar.addWidget(label("  Оранжевым — износ от 90 % или замер у верхней границы допуска; "
                             "красным — ресурс исчерпан или замер вне допуска.", "note", True), 1)
         lst.addLayout(bar)
+        self.life = label("", "muted", True)
+        lst.addWidget(self.life)
         lst.addWidget(self.status)
         add.clicked.connect(self.add_die)
         b_use.clicked.connect(self.add_usage)
@@ -82,21 +86,33 @@ class DiesPage(Page):
     def recalc(self):
         self.refresh()
 
+    def on_show(self):
+        # журнал мог измениться в «Маршруте» (запись партии) — читаем заново, чтобы не затереть
+        self.dies = self.load()
+        refill(self.f_tol, all_standards(), first=["без допуска"])
+        self.refresh()
+
     def load(self):
+        self.readonly = False
         try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except FileNotFoundError:
+            return load_list(self.path)
+        except DamagedFile as e:
+            QMessageBox.warning(self, "Журнал фильер", str(e))
             return []
-        except (OSError, json.JSONDecodeError):
+        except OSError as e:
+            # файл не открылся (занят, нет прав) — работаем без него, но поверх не пишем
+            self.readonly = True
             QMessageBox.warning(self, "Журнал фильер",
-                                "Файл журнала повреждён или недоступен, начинаю с пустого.")
+                                f"Не удалось открыть журнал, изменения не будут сохранены:\n{e}")
             return []
 
     def save(self):
+        if getattr(self, "readonly", False):
+            QMessageBox.warning(self, "Журнал фильер", "Журнал не был прочитан при запуске — "
+                                "сохранение отключено, чтобы не затереть файл. Перезапусти программу.")
+            return
         try:
-            with open(self.path, "w", encoding="utf-8") as fh:
-                json.dump(self.dies, fh, ensure_ascii=False, indent=2)
+            save_list(self.dies, self.path)
         except OSError as e:
             QMessageBox.warning(self, "Журнал фильер", f"Не удалось сохранить файл:\n{e}")
 
@@ -121,6 +137,16 @@ class DiesPage(Page):
             else:
                 colors.append(None)
         fill_table(self.table, rows, colors)
+        life = actual_life(self.dies)
+        if life:
+            by_type = [(t, actual_life(self.dies, t)) for t in DIE_TYPES]
+            parts = [f"{t} — {fmt(x[0], 1)} т ({x[1]} шт.)" for t, x in by_type if x]
+            self.life.setText(f"Фактическая стойкость по снятым фильерам: {fmt(life[0], 1)} т в "
+                              f"среднем ({life[1]} шт.); " + "; ".join(parts) + ". Её можно взять "
+                              "в себестоимость: «Маршрут» → «Экономика».")
+        else:
+            self.life.setText("Фактическая стойкость появится, когда будут сняты с работы "
+                              "фильеры с записанной наработкой.")
 
     @staticmethod
     def tol_state(d):

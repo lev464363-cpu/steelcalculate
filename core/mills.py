@@ -1,9 +1,9 @@
 """Профили станов (файл stany.json рядом с программой) и проверка маршрута на стане."""
-import json
 import os
 
 from core.drawing import split_stages
 from core.paths import app_dir
+from core.storage import load_list, save_list
 from core.util import fmt
 
 MILLS_FILE = "stany.json"
@@ -17,17 +17,12 @@ def mills_path():
 
 
 def load_mills(path=None):
-    try:
-        with open(path or mills_path(), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except FileNotFoundError:
-        return []
+    """Повреждённый файл откладывается в резервную копию (DamagedFile), см. core.storage."""
+    return load_list(path or mills_path())
 
 
 def save_mills(mills, path=None):
-    with open(path or mills_path(), "w", encoding="utf-8") as fh:
-        json.dump(mills, fh, ensure_ascii=False, indent=2)
+    save_list(mills, path or mills_path())
 
 
 def find_mill(mills, name):

@@ -133,12 +133,35 @@ def plan_dies(rows, group, mu, wet_from=1.6, journal=None, match_pct=1.0):
 
 def load_journal():
     """Журнал фильер (filery.json рядом с программой); при ошибке — пустой список."""
-    import json
     import os
     from core.paths import app_dir
+    from core.storage import load_list
     try:
-        with open(os.path.join(app_dir(), "filery.json"), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
+        # только чтение: повреждённый файл откладывает и показывает раздел «Журнал фильер»
+        return load_list(os.path.join(app_dir(), "filery.json"), quarantine=False)
     except (OSError, ValueError):
         return []
+
+
+def book_batch(journal, ids, tons, note=""):
+    """Добавляет партию (т) к наработке фильер с номерами ids и пишет её в историю фильеры.
+    Возвращает номера, которых нет среди фильер «в работе»."""
+    from datetime import date
+    by_id = {d["id"]: d for d in journal if d.get("status") == "в работе"}
+    missing = []
+    for die_id in ids:
+        d = by_id.get(die_id)
+        if d is None:
+            missing.append(die_id)
+            continue
+        d["used"] = d.get("used", 0) + tons
+        d.setdefault("log", []).append(dict(date=date.today().strftime("%d.%m.%Y"), t=tons,
+                                            note=note))
+    return missing
+
+
+def actual_life(journal, die_type=None):
+    """Фактическая стойкость: средняя наработка снятых фильер, т. (среднее, число) или None."""
+    used = [d.get("used", 0) for d in journal if d.get("status") == "снята"
+            and d.get("used", 0) > 0 and (die_type is None or d.get("type") == die_type)]
+    return (sum(used) / len(used), len(used)) if used else None

@@ -41,20 +41,23 @@ def build(page, tabs, index):
     page.o_rho = NumField("Плотность")
     page.o_diams = QLineEdit("0,8; 1,0; 1,2; 1,6; 2,0; 2,5; 3,0; 4,0")
     page.o_d0 = NumField("Исходный диаметр", "5,5")
+    page.o_vmin = NumField("Мин. скорость", fmt(DEFAULT_LIMITS["v_min"], 0))
     page.o_vmax = NumField("Макс. скорость", fmt(DEFAULT_LIMITS["v_max"], 0))
     page.o_gmin = NumField("Мин. запас прочности", "1,4")
     page.o_tmax = NumField("Макс. температура", fmt(DEFAULT_LIMITS["t_max"], 0))
     page.o_twind = NumField("Температура намотки", fmt(DEFAULT_LIMITS["t_wind"], 0))
     page.o_lmin = NumField("Мин. вытяжка за проход", "1,10")
     grid = [("Плотность, г/см³", page.o_rho), ("Исходный диаметр, мм", page.o_d0),
-            ("Готовые диаметры, мм", page.o_diams), ("Макс. скорость стана, м/с", page.o_vmax),
+            ("Готовые диаметры, мм", page.o_diams), ("Мин. скорость стана, м/с", page.o_vmin),
+            ("Макс. скорость стана, м/с", page.o_vmax),
             ("Минимальный запас прочности", page.o_gmin), ("Макс. температура проволоки, °C", page.o_tmax),
             ("Макс. температура на намотке, °C", page.o_twind),
             ("Мин. вытяжка за проход", page.o_lmin)]
     for i, (text, w) in enumerate(grid):
         g.addWidget(QLabel(text), 1 + i // 2, (i % 2) * 2)
         g.addWidget(w, 1 + i // 2, (i % 2) * 2 + 1)
-    page.o_from_route = QCheckBox("Цены, охлаждение и трение — из «Маршрута»")
+    page.o_from_route = QCheckBox("Цены, охлаждение, трение, стан и требование к прочности — "
+                                  "из «Маршрута»")
     page.o_from_route.setChecked(True)
     g.addWidget(page.o_from_route, 6, 0, 1, 4)
     bar = QHBoxLayout()
@@ -83,9 +86,10 @@ def _fill_rho(page):
 
 
 def _route_conditions(page):
-    """Цены, тепловые условия и трение из «Маршрута» (или значения по умолчанию)."""
+    """Цены, тепловые условия, трение, профиль стана и параметры металла из «Маршрута»
+    (или значения по умолчанию без стана)."""
     if not page.o_from_route.isChecked():
-        return None, None, 6.0, 0.05
+        return None, None, 6.0, 0.05, None, None
     from ui import cost_panel
     from ui.pages.route import RoutePage
     route = page.win.page_of(RoutePage)
@@ -94,13 +98,14 @@ def _route_conditions(page):
     cost = cost_panel.read_inputs(route) if route.cost_on.isChecked() else None
     if cost:
         cost.update(copper=False, full=False)
-    return cost, thermal, p["alpha"], p["mu"]
+    overrides = {k: p[k] for k in ("ys", "sq", "sig_ann", "sig_min", "sig_max")}
+    return cost, thermal, p["alpha"], p["mu"], route.mill_profile(), overrides
 
 
 def run_opt(page):
     try:
-        for f in (page.o_rho, page.o_d0, page.o_vmax, page.o_gmin, page.o_tmax, page.o_twind,
-                  page.o_lmin):
+        for f in (page.o_rho, page.o_d0, page.o_vmin, page.o_vmax, page.o_gmin, page.o_tmax,
+                  page.o_twind, page.o_lmin):
             f.set_error(False)
         group = page.o_group.currentText()
         rho, d0 = page.o_rho.value(), page.o_d0.value()
@@ -110,12 +115,14 @@ def run_opt(page):
             raise InputError("Готовые диаметры — числа через точку с запятой.")
         if not diams or any(not 0 < d < d0 for d in diams):
             raise InputError("Готовые диаметры должны быть меньше исходного.")
-        limits = dict(v_max=page.o_vmax.value(), gmin=page.o_gmin.value(),
+        limits = dict(v_min=page.o_vmin.value(), v_max=page.o_vmax.value(), gmin=page.o_gmin.value(),
                       t_max=page.o_tmax.value(), t_wind=page.o_twind.value(),
                       lam_min=page.o_lmin.value())
+        if limits["v_min"] >= limits["v_max"]:
+            raise FieldError(page.o_vmin, "Минимальная скорость должна быть меньше максимальной.")
         if limits["lam_min"] <= 1:
             raise FieldError(page.o_lmin, "Минимальная вытяжка должна быть больше 1.")
-        cost, thermal, alpha, mu = _route_conditions(page)
+        cost, thermal, alpha, mu, mill, overrides = _route_conditions(page)
     except FieldError as e:
         e.field.set_error(True, str(e))
         page.o_msg.setText(str(e))
@@ -130,7 +137,7 @@ def run_opt(page):
             page.o_msg.setText(f"Считаю {fmt(d, 2)} мм…")
             QApplication.processEvents()
             b = optimize(group, rho, d, d0=d0, cost=cost, thermal=thermal, limits=limits,
-                         alpha=alpha, mu=mu)
+                         alpha=alpha, mu=mu, overrides=overrides, mill=mill)
             page.o_results.append((group, b))
             if b is None:
                 rows.append([fmt(d, 2)] + ["—"] * 9 + ["нет допустимого маршрута"])
@@ -145,7 +152,10 @@ def run_opt(page):
         QApplication.restoreOverrideCursor()
     fill_table(page.o_table, rows)
     page.o_msg.setText("Готово. Скорости этапов между отжигами указаны через «/». В маршрут "
-                       "откроется скорость последнего этапа.")
+                       "откроется скорость последнего этапа. "
+                       + (f"Учтён стан «{mill['name']}»: барабаны, паспортная скорость и мощность "
+                          f"двигателей." if mill else "Стан не выбран — барабаны и мощность "
+                          "двигателей не проверялись (выбери стан во вкладке «Стан» маршрута)."))
 
 
 def open_in_route(page):

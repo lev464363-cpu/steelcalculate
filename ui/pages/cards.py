@@ -4,10 +4,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QMessageBox, QTab
 
 from core.cards import compare, load_cards, save_cards
 from core.cost import cost_for_route
+from core.dies import load_journal, plan_dies
 from core.mills import find_mill, load_mills
+from core.storage import DamagedFile
 from core.route_plan import plan_route
 from core.util import InputError, fmt
-from ui.pdf import save_card_pdf
+from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px
 from ui.widgets import Page, button, fill_table, label, make_table, tab_box
 from ui.anim import AnimatedTabWidget
@@ -34,8 +36,9 @@ class CardsPage(Page):
         b_open = button("Открыть в маршруте", primary=True)
         b_cmp = button("Сравнить выбранные")
         b_pdf = button("В PDF")
+        b_op = button("Карта оператора")
         b_del = button("Удалить")
-        for b in (b_open, b_cmp, b_pdf, b_del):
+        for b in (b_open, b_cmp, b_pdf, b_op, b_del):
             bar.addWidget(b)
         bar.addStretch()
         lst.addLayout(bar)
@@ -50,6 +53,7 @@ class CardsPage(Page):
         b_open.clicked.connect(self.open_selected)
         b_cmp.clicked.connect(self.compare_selected)
         b_pdf.clicked.connect(self.pdf_selected)
+        b_op.clicked.connect(self.operator_selected)
         b_del.clicked.connect(self.delete_selected)
         self.table.doubleClicked.connect(lambda *_: self.open_selected())
         self.refresh()
@@ -72,6 +76,9 @@ class CardsPage(Page):
         self.results, rows, colors = [], [], []
         try:
             mills = load_mills()
+        except DamagedFile as e:
+            mills = []
+            self.status.setText(f"{self.status.text()}\n{e}".strip())
         except (OSError, ValueError):
             mills = []
         for c in self.cards:
@@ -129,6 +136,19 @@ class CardsPage(Page):
             return
         save_card_pdf(self, c["name"], c.get("mill", ""), c["group"], c["params"], r,
                       c.get("note", ""))
+
+    def operator_selected(self):
+        i = self._one()
+        if i is None:
+            return
+        c, r = self.cards[i], self.results[i]
+        if r is None:
+            QMessageBox.warning(self, "Техкарты", "В этой техкарте ошибка в данных: открой её в "
+                                                  "маршруте, исправь и сохрани заново.")
+            return
+        # волоки и фильеры из журнала — с настройками по умолчанию (мокрое с 1,6 мм, ±1 %)
+        dies = plan_dies(r["rows"], c["group"], c["params"]["mu"], journal=load_journal())
+        save_operator_pdf(self, c["name"], c.get("mill", ""), c["group"], c["params"], r, dies)
 
     def delete_selected(self):
         idx = self.selected()

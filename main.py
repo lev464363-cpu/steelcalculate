@@ -56,7 +56,8 @@ def ensure_pyside6():
 
 
 def main():
-    if not ensure_pyside6():
+    # в собранном .exe PySide6 уже внутри, а консоли нет — ставить нечего и ждать Enter негде
+    if not getattr(sys, "frozen", False) and not ensure_pyside6():
         input("\nНажми Enter, чтобы закрыть...")
         sys.exit(1)
     from core.data import DataError

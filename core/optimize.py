@@ -19,7 +19,8 @@ DEFAULT_COST = dict(shifts=2, shift_h=12, days=250, ku_pct=75, yield_pct=97, p_i
                     lube_price=250, anneal_cost_t=3000, other_t=300, mill_price=45e6,
                     mill_years=10, repair_pct=4, energy_method=ENERGY_BY_ROUTE, copper=False,
                     full=False)
-DEFAULT_LIMITS = dict(gmin=1.4, t_max=180.0, t_wind=100.0, v_max=30.0, n_max=24, lam_min=1.10,
+# скорость на финише этапа — в рабочем диапазоне завода 5–15 м/с
+DEFAULT_LIMITS = dict(gmin=1.4, t_max=180.0, t_wind=100.0, v_min=5.0, v_max=15.0, n_max=24, lam_min=1.10,
                       lam_min_last=1.05,
                       ratios=(1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3))
 # Точка калибровки охлаждения: 50 % перегрева снимается при 15 м/с на проволоке 1,2 мм (условно)
@@ -42,9 +43,12 @@ def _stage_ok(p, group, s, last, limits):
 
 
 def optimize(group, rho, dk, d0=5.5, cost=None, thermal=None, limits=None, alpha=6.0, mu=0.05,
-             overrides=None):
+             overrides=None, mill=None):
     """Возвращает лучший маршрут (словарь) или None, если допустимого нет.
-    overrides — замена параметров группы и металла (limit, lmax, sig0, sigf, nh, redref, cp)."""
+    overrides — замена параметров группы и металла (limit, lmax, sig0, sigf, nh, redref, cp,
+    а также sig_ann, sig_min, sig_max, ys, sq).
+    mill — профиль стана: этап должен помещаться на барабаны, скорость — не выше паспортной,
+    мощность волочения на каждом барабане — не выше мощности двигателя с учётом КПД."""
     cost = dict(DEFAULT_COST, **(cost or {}))
     thermal = dict(DEFAULT_THERMAL, **(thermal or {}))
     lim = dict(DEFAULT_LIMITS, **(limits or {}))
@@ -71,28 +75,41 @@ def optimize(group, rho, dk, d0=5.5, cost=None, thermal=None, limits=None, alpha
                 r1 = plan_route(p, group)
             except InputError:
                 continue
-            if r1["gamma_min"] < lim["gmin"]:
+            if r1["gamma_min"] < lim["gmin"] or not r1["strength_ok"]:
                 continue
             # Каждый этап между отжигами — отдельный прогон со своей скоростью: для каждого
             # находим наибольшую скорость по стану, мощности и нагреву (у последнего — и намотке).
-            stages_rows, powers, k0 = split_stages(r1["rows"]), [], 0
+            # Мощность линейна по скорости этапа: r1 посчитан при 1 м/с на финише каждого этапа.
+            stages_rows, powers, drum_v, k0 = split_stages(r1["rows"]), [], [], 0
+            if mill and any(len(st) > int(mill["drums"]) for st in stages_rows):
+                continue                       # этап не помещается на барабаны стана
+            v_top = min(lim["v_max"], mill["v_max"]) if mill and mill.get("v_max") else lim["v_max"]
             for st in stages_rows:
-                powers.append(sum(f["power"] for f in r1["forces"][k0:k0 + len(st)]))
+                fs = r1["forces"][k0:k0 + len(st)]
+                powers.append(sum(f["power"] for f in fs))
+                # наибольшая скорость этапа по двигателю самого нагруженного барабана
+                p_drum = mill["p_motor"] * mill["eta"] / 100 if mill and mill.get("p_motor") else None
+                drum_v.append(min((p_drum / f["power"] for f in fs if f["power"] > 0),
+                                  default=v_top) if p_drum else v_top)
                 k0 += len(st)
             m = len(stages_rows)
-            speeds, limits_by, feasible = [lim["v_max"]] * m, [], True
+            speeds, limits_by, feasible = [v_top] * m, [], True
             for s_i in range(m):
-                v_pow = p_avail / powers[s_i] if powers[s_i] > 0 else lim["v_max"]
-                hi = min(lim["v_max"], v_pow)
-                why = "скорость стана" if lim["v_max"] <= v_pow else "мощность стана"
+                v_pow = p_avail / powers[s_i] if powers[s_i] > 0 else v_top
+                hi = min(v_top, v_pow, drum_v[s_i])
+                why = ("скорость стана" if hi == v_top else
+                       "мощность барабана" if hi == drum_v[s_i] else "мощность стана")
                 last = s_i == m - 1
+                if hi < lim["v_min"]:          # не тянется даже на минимальной скорости
+                    feasible = False
+                    break
 
                 def ok(v):
                     vs = list(speeds)
                     vs[s_i] = v
                     return _stage_ok(dict(p, v=vs[-1], v_stages=vs), group, s_i, last, lim)
                 if not ok(hi):
-                    lo = 0.2
+                    lo = lim["v_min"]
                     if not ok(lo):
                         feasible = False
                         break
@@ -111,7 +128,7 @@ def optimize(group, rho, dk, d0=5.5, cost=None, thermal=None, limits=None, alpha
                 continue
             limit_by = limits_by[-1]
             pv = dict(p, v=speeds[-1], v_stages=speeds if m > 1 else None)
-            r = plan_route(pv, group)
+            r = plan_route(pv, group, mill)
             c = cost_for_route(cost, pv, r)
             cand = dict(n=n, ratio=k, v=pv["v"], lam1=r["lams"][0], lamn=r["lams"][-1],
                         anneals=r["anneals"], gamma_min=r["gamma_min"], t_max=r["t_max"],

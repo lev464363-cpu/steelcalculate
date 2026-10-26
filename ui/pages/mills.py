@@ -7,6 +7,8 @@ from core.util import InputError, fmt, num
 from ui.theme import sized
 from ui.widgets import FieldError, NumField, Page, button, label, panel
 
+DEFAULT_MOTOR_KW = "52"       # двигатель одного барабана на станах завода, кВт
+
 
 class MillsPage(Page):
     title = "Станы"
@@ -39,6 +41,7 @@ class MillsPage(Page):
         self.f_d = NumField("Диаметр барабана")
         self.f_vmax = NumField("Макс. скорость")
         self.f_power = NumField("Мощность двигателя барабана")
+        self.f_power.setText(DEFAULT_MOTOR_KW)
         self.f_eta = NumField("КПД привода")
         self.f_eta.setText("85")
         self.f_kin = QLineEdit()
@@ -110,6 +113,7 @@ class MillsPage(Page):
         self.list.setCurrentRow(-1)
         for w in (self.f_name, self.f_drums, self.f_d, self.f_vmax, self.f_power, self.f_kin):
             w.clear()
+        self.f_power.setText(DEFAULT_MOTOR_KW)
         self.f_eta.setText("85")
         self.f_name.setFocus()
         self.status.setText("Заполни данные и нажми «Сохранить профиль».")

@@ -1,0 +1,45 @@
+name: Сборка exe
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]          # метка версии (v1.0 …) — ещё и релиз с архивом
+  workflow_dispatch:
+
+permissions:
+  contents: write         # для публикации релиза
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # кириллица в выводе: консоль сборщика — не UTF-8
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Проверка расчётов
+        run: python tests/test_calc.py
+      - name: Сборка
+        run: python build_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kalkulyator-volocheniya-windows
+          path: dist/
+      - name: Архив для релиза
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: >-
+          python -c "import build_exe;
+          build_exe.pack('dist', 'Kalkulyator-volocheniya-${{ github.ref_name }}-windows.zip')"
+      - name: Релиз
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          "Kalkulyator-volocheniya-${{ github.ref_name }}-windows.zip"
+          --title "Калькулятор волочения ${{ github.ref_name }}"
+          --notes-file "release-notes/${{ github.ref_name }}.md"

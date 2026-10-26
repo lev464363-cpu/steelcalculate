@@ -11,21 +11,24 @@ from core.util import fmt, g_per_m
 # Параметры маршрута: всё, что нужно для расчёта и сохраняется в техкарте
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
-              "dcool", "lams")
-# значения для техкарт, сохранённых до появления расчёта нагрева
-THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0)
+              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max")
+OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max")   # могут быть пустыми
+# значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
+THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0, sig_ann=None,
+                        sig_min=None, sig_max=None)
 
 
 def plan_route(p, group="", mill=None):
     """mill — профиль стана (словарь) или None: тогда проверка на стане не выполняется."""
     p = dict(THERMAL_DEFAULTS, **{k: v for k, v in p.items()
-                                  if v is not None or k in ("drum", "lams")})
+                                  if v is not None or k in OPTIONAL_KEYS})
     n = int(p["n"])
     total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
                                              p["lmax"], p["v"], p["drum"], p.get("v_stages"),
                                              p.get("lams"))
     forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
-                          eps_ref=eps_from_reduction(p["redref"]))
+                          ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
+                          back=p["sq"], sig_ann=p["sig_ann"])
     gpm = g_per_m(p["rho"], p["dk"])
     weak = [r["i"] for r, f in zip(rows, forces) if f["gamma"] < p["gmin"]]
     over = [r["i"] for r in rows if r["over"]]
@@ -40,6 +43,21 @@ def plan_route(p, group="", mill=None):
     if anneals and "углеродистой ленты" in group:
         warnings.append("Порошковую проволоку с углеродистой оболочкой обычно тянут без отжига: "
                         "лучше пересмотреть маршрут или диаметр трубки.")
+    sig_end = forces[-1]["sig_out"]
+    lo_ok = p["sig_min"] is None or sig_end >= p["sig_min"] - 1e-9
+    hi_ok = p["sig_max"] is None or sig_end <= p["sig_max"] + 1e-9
+    if not (lo_ok and hi_ok):
+        if p["sig_max"] is None:
+            need = f"не ниже {fmt(p['sig_min'], 0)}"
+        elif p["sig_min"] is None:
+            need = f"не выше {fmt(p['sig_max'], 0)}"
+        else:
+            need = f"{fmt(p['sig_min'], 0)}–{fmt(p['sig_max'], 0)}"
+        warnings.append(f"Прочность готовой проволоки по расчёту {fmt(sig_end, 0)} МПа, а по "
+                        f"требованию {need} МПа. "
+                        + ("Нужно больше обжатие после последнего отжига или более прочная "
+                           "заготовка." if not lo_ok else
+                           "Нужен отжиг ближе к финишу или меньшее суммарное обжатие."))
     # опорная скорость охлаждения: если не задана — охлаждение задано при текущей скорости
     v_ref = p.get("vcool") or p["v"]
     thermal = wire_temperatures(rows, forces, p["rho"], p["cp"], p["t0"], p["tw"], p["cool"],
@@ -59,6 +77,7 @@ def plan_route(p, group="", mill=None):
                 thermal=thermal, t_max=max(t["t_out"] for t in thermal),
                 t_wind=thermal[-1]["t_drum"], mill=mill_res,
                 gpm=gpm, gamma_min=min(f["gamma"] for f in forces),
+                sig_end=sig_end, strength_ok=lo_ok and hi_ok,
                 power=sum(f["power"] for f in forces), productivity=gpm * p["v"] * 3.6,
                 eps=math.log(total), weak=weak, over=over, warnings=warnings)
 

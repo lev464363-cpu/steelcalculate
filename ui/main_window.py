@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QListWidget, Q
 from ui.pages.analytics import AnalyticsPage
 from ui.pages.cards import CardsPage
 from ui.pages.copper import CopperPage
+from ui.pages.custom_tol import CustomTolPage
 from ui.pages.dies import DiesPage
 from ui.pages.draw import DrawPage
 from ui.pages.mass import MassPage
@@ -22,12 +23,12 @@ from ui.theme import (FONT, FONT_MAX, FONT_MIN, THEMES, T, build_qss, refresh_gl
                       sized)
 from ui.anim import ANIM, SECTION_MS, AnimatedTabWidget, NavIndicator, crossfade
 
-APP_TITLE = "Калькулятор волочения — v8.2"
+APP_TITLE = "Калькулятор волочения — v1.0"
 
 # Разделы бокового меню и их подвкладки. Новая подвкладка добавляется одной строкой.
 SECTIONS = [
     ("Волочение", [("Маршрут", RoutePage), ("Станы", MillsPage), ("Один проход", DrawPage),
-                   ("Допуски и волоки", TolerancePage)]),
+                   ("Допуски и волоки", TolerancePage), ("Свои допуски", CustomTolPage)]),
     ("Техкарты", [("Техкарты", CardsPage)]),
     ("Материалы", [("Масса и упаковка", MassPage), ("Омеднение", CopperPage)]),
     ("Аналитика", [("Аналитика", AnalyticsPage)]),

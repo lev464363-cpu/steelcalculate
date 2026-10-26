@@ -1,8 +1,8 @@
 """Раздел «Допуски и волоки»: поле допуска, размер новой волоки, запас на износ, проверка замера."""
 from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel
 
-from core.tolerance import (LEGACY, STANDARDS, check_measure, curvature, die_plan,
-                            ovality_share, tolerance)
+from core.tolerance import (LEGACY, all_standards, check_measure, curvature, custom_row,
+                            die_plan, ovality_share, tolerance)
 from core.util import InputError, fmt
 from ui.widgets import Card, FieldError, Page, cards_row, label, panel
 
@@ -21,7 +21,7 @@ class TolerancePage(Page):
         g.setHorizontalSpacing(16)
         g.addWidget(QLabel("Допуск"), 0, 0)
         self.std = QComboBox()
-        self.std.addItems(STANDARDS)
+        self.std.addItems(all_standards())
         g.addWidget(self.std, 0, 1)
         self.d = self.add_field(g, 1, "Номинальный диаметр, мм", "1,2", "tol/d")
         self.reserve = self.add_field(g, 2, "Новая волока выше нижней границы на, % поля", "25",
@@ -46,7 +46,8 @@ class TolerancePage(Page):
             "ГОСТ 7417-75 и GB/T 905-1994 — поля h по ISO 286; для промежуточных диаметров "
             "по ГОСТ 7417 и GB/T 14957 допуск берётся по ближайшему большему размеру. "
             "Запас 25 % поля — стартовое значение: уточни с учётом упругого восстановления "
-            "проволоки и точности замера волок.", "note", True))
+            "проволоки и точности замера волок. Свои НТД (ТУ и др.) — подвкладка «Свои допуски».",
+            "note", True))
         self.body.addStretch()
         self.combos["tol/std"] = self.std
         self.legacy = LEGACY
@@ -74,11 +75,34 @@ class TolerancePage(Page):
         extra = f"Овальность — {ov_text}."
         if curv is not None:
             extra += f" Кривизна прутка — не более {fmt(curv, 2)} мм на 1 м (табл. 2)."
+        own = custom_row(std, d)
+        if own is not None:
+            extra = f"Свой допуск «{std}»: +{fmt(up, 3)} / {fmt(low, 3)} мм. " + (
+                f"Примечание: {own['note']}" if own["note"] else "Примечания нет.")
         m = self.meas.value(optional=True)
         self.state.setText((f"Замер {fmt(m, 3)} мм: {STATE_TEXT[check_measure(d, up, low, m)]}. "
                             if m is not None else "") + extra)
+
+    def on_show(self):
+        """Свои НТД могли измениться в «Свои допуски» — обновить список, сохранив выбор."""
+        refill(self.std, all_standards())
 
     def clear_results(self):
         for c in self.c + self.c2:
             c.set("—")
         self.state.setText("")
+
+
+def refill(combo, items, first=()):
+    """Заменяет пункты списка, оставляя выбранный, если он ещё есть."""
+    items = list(first) + list(items)
+    cur = combo.currentText()
+    if [combo.itemText(i) for i in range(combo.count())] == items:
+        return
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItems(items)
+    if cur in items:
+        combo.setCurrentText(cur)
+    combo.blockSignals(False)
+    combo.currentIndexChanged.emit(combo.currentIndex())

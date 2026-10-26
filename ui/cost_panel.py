@@ -79,6 +79,10 @@ def build_inputs(page, tabs):
         for key, text, default in fields:
             page.cost_f[key] = page.add_field(g, g.rowCount(), text, default, f"cost/{key}")
         if title == "Инструмент и материалы":
+            b_life = button("Стойкость — из журнала фильер")
+            b_life.setToolTip("Средняя наработка снятых с работы фильер по журналу.")
+            b_life.clicked.connect(lambda: _life_from_journal(page))
+            g.addWidget(b_life, g.rowCount(), 0, 1, 2)
             g.addWidget(label("Стойкость — тонн через одну волоку. Если на заводе считают норму "
                               "расхода на весь маршрут (например, 0,32 волоки на тонну), то "
                               "стойкость ≈ число проходов / норма: при 11 проходах ≈ 34 т.",
@@ -96,6 +100,19 @@ def build_inputs(page, tabs):
     for w in (page.cost_copper, page.cost_full, page.cost_on):
         w.toggled.connect(page.safe_recalc)
     page.cost_method.currentIndexChanged.connect(page.safe_recalc)
+
+
+def _life_from_journal(page):
+    from core.dies import actual_life, load_journal
+    life = actual_life(load_journal())
+    if not life:
+        QMessageBox.information(page, "Стойкость", "В журнале нет снятых фильер с записанной "
+                                                   "наработкой — оставлена норма.")
+        return
+    page.cost_f["die_life_t"].setText(fmt(life[0], 1))
+    QMessageBox.information(page, "Стойкость", f"Взята фактическая стойкость {fmt(life[0], 1)} т "
+                                               f"(среднее по {life[1]} снятым фильерам).")
+    page.safe_recalc()
 
 
 def build_results(page, tabs):
