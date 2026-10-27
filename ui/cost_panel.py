@@ -214,6 +214,59 @@ def clear(page, message=""):
     page.cost_msg.setText(message)
 
 
+def export_rows(page):
+    """Снимок текущих полей и результатов без округления и повторного расчёта."""
+    import math
+    from core.util import num
+
+    on = page.cost_on.isChecked()
+    rows = [["Расчёт себестоимости включён", on],
+            ["Метод расчёта электроэнергии", page.cost_method.currentText()],
+            ["Учитывать медь на омеднение", page.cost_copper.isChecked()],
+            ["Добавить катанку, отходы и упаковку", page.cost_full.isChecked()]]
+    for title, fields in GROUPS:
+        rows.append([title])
+        for key, text, _ in fields:
+            raw = page.cost_f[key].text()
+            try:
+                value = num(raw)
+                if not math.isfinite(value):
+                    value = raw
+            except ValueError:
+                value = raw
+            rows.append([text, value])
+    rows += [[], ["Исходные данные маршрута"],
+             ["Готовый диаметр, мм", page.p["dk"]],
+             ["Скорость на финише, м/с", page.p["v"]],
+             ["Плотность, г/см³", page.p["rho"]],
+             ["Проходов", page.res["n"]], ["Отжигов", page.res["anneals"]],
+             ["Мощность на волочение, кВт", page.res["power"]]]
+    r = page.res.get("cost") if on else None
+    rows.append(["Статус", page.cost_msg.text() or ("Рассчитано" if r else
+                  "Себестоимость не рассчитана" if on else "Расчёт себестоимости выключен")])
+    if r is None:
+        return rows
+    rows += [[], ["Показатель", "Значение"]]
+    for key, title in [
+        ("q_t", "Теоретическая производительность, кг/ч"),
+        ("q_f", "Фактическая производительность, кг/ч"),
+        ("p_work", "Рабочая мощность, кВт"), ("p_idle", "Холостой ход, кВт"),
+        ("out_year_t", "Годовой выпуск, т"), ("out_month_t", "Выпуск, т/мес"),
+        ("kwh_t", "Электроэнергия, кВт·ч/т"), ("stages", "Этапов")
+    ]:
+        rows.append([title, r[key]])
+    if page.cost_copper.isChecked():
+        rows.append(["Медь, кг/т", r["cu_kg_t"]])
+    rows += [["Передел, руб/кг", r["conversion"] / 1000], [],
+             ["Статья", "руб/т годной", "Доля, %"]]
+    rows += [[name, value, value / r["conversion"] * 100] for name, value in r["items"]]
+    rows.append(["ИТОГО передел", r["conversion"], 100])
+    if page.cost_full.isChecked():
+        rows += [[name, value] for name, value in r["full_items"]]
+        rows.append(["ИТОГО полная себестоимость", r["full"]])
+    return rows
+
+
 def load(page, cost):
     """Подставляет исходные данные себестоимости из техкарты."""
     if not cost:
