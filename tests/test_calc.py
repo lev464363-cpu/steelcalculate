@@ -199,7 +199,35 @@ class TestForces(unittest.TestCase):
         low = plan_route(dict(BASE, sig_min=s + 10))
         self.assertFalse(low["strength_ok"])
         self.assertTrue(any("не ниже" in w for w in low["warnings"]))
-        self.assertFalse(plan_route(dict(BASE, sig_max=s - 10))["strength_ok"])
+        # прочнее требования — программа сама ставит отжиг по прочности
+        cut = plan_route(dict(BASE, sig_max=s - 10))
+        self.assertTrue(cut["strength_ok"])
+        self.assertGreater(cut["anneals"], res["anneals"])
+        self.assertLessEqual(cut["sig_end"], s - 10 + 1e-9)
+        self.assertTrue(any("по прочности" in r["notes"] for r in cut["rows"]))
+
+    def test_strength_anneal_example(self):
+        # 5,5 → 3,0 мм, требование 550–850 МПа: без отжига прочность намного выше
+        p = dict(BASE, dk=3.0, n=6, limit=96, sig0=550, sigf=1050)
+        free = plan_route(p)
+        self.assertGreater(free["sig_end"], 850)
+        r = plan_route(dict(p, sig_min=550, sig_max=850))
+        self.assertTrue(r["strength_ok"])
+        self.assertTrue(550 <= r["sig_end"] <= 850)
+        self.assertEqual(r["anneals"], free["anneals"] + 1)
+        # подбор числа проходов учитывает требование по прочности
+        n = suggest_n_full(dict(p, sig_min=550, sig_max=850))
+        self.assertTrue(plan_route(dict(p, n=n, sig_min=550, sig_max=850))["strength_ok"])
+
+    def test_fit_n(self):
+        from core.forces import fit_n
+        # кривая с n = 0,4 через 95 %: точка при 60 % даёт обратно n = 0,4
+        e60, e95 = eps_from_reduction(60), eps_from_reduction(95)
+        s60 = 560 + (1050 - 560) * (e60 / e95) ** 0.4
+        self.assertAlmostEqual(fit_n(560, 1050, 95, 60, s60), 0.4, places=9)
+        for bad in ((560, 1050, 95, 95, 900), (560, 1050, 95, 60, 500)):
+            with self.assertRaises(InputError):
+                fit_n(*bad)
 
 
 class TestCoating(unittest.TestCase):
@@ -399,6 +427,56 @@ class TestCost(unittest.TestCase):
         self.assertAlmostEqual(full["Возврат отходов"], -20000 * (1 / 0.98 - 1), places=6)
         self.assertAlmostEqual(full["Упаковка"], 10000, places=6)
         self.assertAlmostEqual(r["full"], r["conversion"] + sum(full.values()), places=6)
+
+    def test_vat_on_rod(self):
+        base = dict(COST, full=True, rod_price=80000, scrap_price=20000, pack_price=150,
+                    pack_kg=80, yield_pct=98)
+        r = cost_breakdown(dict(base, rod_vat_pct=22))
+        full = dict(r["full_items"])
+        self.assertAlmostEqual(full["Катанка (заготовка), с НДС 22 %"], 80000 * 1.22 / 0.98,
+                               places=6)
+        self.assertAlmostEqual(full["Упаковка"], 150 / 80 * 1000, places=6)   # моток 80 кг
+        old = dict(cost_breakdown(base)["full_items"])                       # старые техкарты
+        self.assertAlmostEqual(old["Катанка (заготовка)"], 80000 / 0.98, places=6)
+        self.assertIn(("Моток", 80.0), PACKAGES)
+
+
+class TestGrades(unittest.TestCase):
+    ROW = dict(name="Св-08Г2С-О, свой", rho=7.85, limit=90, lam_max=1.3, sig0=580, sigf=1100,
+               red_ref=95, n=0.45, cp=470, note="по сертификату")
+
+    def test_grade_becomes_group(self):
+        import tempfile
+        from core import grades
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                saved = grades.save_grades([self.ROW], os.path.join(tmp, "marki.json"))
+                self.assertEqual(saved[0]["sig0"], 580)
+                g = GROUPS[self.ROW["name"]]
+                self.assertEqual(g["family"], grades.FAMILY)
+                self.assertEqual(g["hardening"]["n"], 0.45)
+                self.assertEqual(DENSITY_MAP[self.ROW["name"]], 7.85)
+                self.assertEqual(list(GROUPS)[-1], self.ROW["name"])        # в конце списка
+                p = dict(BASE, sig0=580, sigf=1100, nh=0.45, redref=95)
+                self.assertEqual(plan_route(p, self.ROW["name"])["n"], 14)
+                # пересохранение без марки — группа пропадает, встроенные целы
+                n_before = len(GROUPS)
+                grades.save_grades([], os.path.join(tmp, "marki.json"))
+                self.assertNotIn(self.ROW["name"], GROUPS)
+                self.assertEqual(len(GROUPS), n_before - 1)
+        finally:
+            grades.apply_grades([])
+
+    def test_bad_grades(self):
+        from core.grades import check_grades
+        builtin = next(iter(GROUPS))
+        for bad in (dict(self.ROW, name=""), dict(self.ROW, name=builtin),
+                    dict(self.ROW, sigf=500), dict(self.ROW, limit=150),
+                    dict(self.ROW, rho="x")):
+            with self.assertRaises(InputError):
+                check_grades([bad])
+        with self.assertRaises(InputError):                      # повтор названия
+            check_grades([self.ROW, dict(self.ROW, name=self.ROW["name"].upper())])
 
 
 class TestCostInCards(unittest.TestCase):

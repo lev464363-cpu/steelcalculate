@@ -9,7 +9,7 @@ Qф = Qт·Kи — фактическая производительность �
 """
 from core.coating import copper_share
 from core.drawing import split_stages
-from core.util import InputError, g_per_m
+from core.util import InputError, fmt, g_per_m
 
 ENERGY_BY_PASSPORT = "по паспорту стана и коэффициенту загрузки"
 ENERGY_BY_ROUTE = "по расчёту маршрута (мощность на волочение / КПД + холостой ход)"
@@ -79,7 +79,7 @@ def cost_breakdown(c):
     if c.get("full"):
         consumption = 1 / yield_                       # т катанки на т годной
         full_items = [
-            ("Катанка (заготовка)", c["rod_price"] * consumption),
+            (_rod_name(c), _rod_price(c) * consumption),
             ("Возврат отходов", -c["scrap_price"] * (consumption - 1)),
             ("Упаковка", c["pack_price"] / c["pack_kg"] * 1000),
         ]
@@ -100,7 +100,17 @@ COST_NUM_KEYS = ("shifts", "shift_h", "days", "ku_pct", "yield_pct", "p_inst", "
                  "die_price", "die_life_t", "lube_kg_t", "lube_price", "anneal_cost_t", "other_t",
                  "mill_price", "mill_years", "repair_pct")
 COPPER_KEYS = ("cu_um", "cu_loss_pct", "cu_price")
-FULL_KEYS = ("rod_price", "scrap_price", "pack_price", "pack_kg")
+FULL_KEYS = ("rod_price", "rod_vat_pct", "scrap_price", "pack_price", "pack_kg")
+
+
+def _rod_price(c):
+    """Цена катанки с прибавкой НДС (rod_vat_pct; в старых техкартах его нет — 0 %)."""
+    return c["rod_price"] * (1 + c.get("rod_vat_pct", 0) / 100)
+
+
+def _rod_name(c):
+    vat = c.get("rod_vat_pct", 0)
+    return f"Катанка (заготовка), с НДС {fmt(vat, 0)} %" if vat else "Катанка (заготовка)"
 
 
 def cost_for_route(cost, p, res):
@@ -152,7 +162,7 @@ def cost_for_route(cost, p, res):
     full_items = []
     if cost.get("full"):
         consumption = 1 / yield_
-        full_items = [("Катанка (заготовка)", cost["rod_price"] * consumption),
+        full_items = [(_rod_name(cost), _rod_price(cost) * consumption),
                       ("Возврат отходов", -cost["scrap_price"] * (consumption - 1)),
                       ("Упаковка", cost["pack_price"] / cost["pack_kg"] * 1000)]
     q_f = 1 / inv_q                                   # тонна проходит все этапы по очереди
@@ -181,6 +191,6 @@ FORMULAS = [
     "Медь = доля меди в проволоке / (1 − потери) × цена.",
     "Амортизация = стоимость стана / срок / годовой выпуск. Ремонт = стоимость × % / годовой "
     "выпуск. Годовой выпуск = Qф × смены × часы × дни.",
-    "Полная себестоимость = передел + катанка / выход − отходы × (1 / выход − 1) + упаковка "
-    "(цена / масса нетто).",
+    "Полная себестоимость = передел + катанка × (1 + НДС) / выход − отходы × (1 / выход − 1) "
+    "+ упаковка (цена / масса нетто).",
 ]

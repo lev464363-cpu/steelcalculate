@@ -252,3 +252,32 @@ def tab_box(tabs, title):
     lay.setSpacing(12)
     tabs.addTab(page, title)
     return lay
+
+
+def fill_groups(combo, tooltips=False):
+    """Список групп сталей (встроенные и свои марки) с разделителями по семействам.
+    Выбор сохраняется; сигнал о смене — только если выбранной группы больше нет.
+    Возвращает True, если выбор изменился."""
+    from core.data import GROUPS
+    cur = combo.currentText()
+    names = [combo.itemText(i) for i in range(combo.count()) if combo.itemText(i)]
+    if names == list(GROUPS) and cur in GROUPS:
+        return False
+    combo.blockSignals(True)
+    combo.clear()
+    family = None
+    for name, grp in GROUPS.items():
+        if grp.get("family") != family:
+            if family is not None:
+                combo.insertSeparator(combo.count())
+            family = grp.get("family")
+        combo.addItem(name)
+        if tooltips:
+            combo.setItemData(combo.count() - 1, f"{family}\n{name}", Qt.ItemDataRole.ToolTipRole)
+    changed = cur not in GROUPS
+    if not changed:
+        combo.setCurrentText(cur)
+    combo.blockSignals(False)
+    if changed:
+        combo.currentIndexChanged.emit(combo.currentIndex())
+    return changed

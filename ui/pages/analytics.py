@@ -8,7 +8,8 @@ from core.data import ANALYTICS, ANALYTICS_SIGN
 from core.util import fmt
 from ui import optimizer_panel
 from ui.theme import T, px
-from ui.widgets import Card, Page, button, cards_row, fill_table, label, make_table, panel
+from ui.widgets import (Card, Page, button, cards_row, fill_groups, fill_table, label, make_table,
+                        panel)
 from ui.anim import AnimatedTabWidget
 
 
@@ -64,6 +65,9 @@ class AnalyticsPage(Page):
         optimizer_panel.build(self, self.tabs, pos)
         self.body.addWidget(self.tabs, 1)
         self.render()
+
+    def on_show(self):
+        fill_groups(self.o_group)          # в оптимизаторе — и свои марки
 
     def _build_calc(self, lay):
         lay.addWidget(label("Калькулятор структуры цены", "section"))

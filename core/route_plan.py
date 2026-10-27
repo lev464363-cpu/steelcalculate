@@ -23,12 +23,33 @@ def plan_route(p, group="", mill=None):
     p = dict(THERMAL_DEFAULTS, **{k: v for k, v in p.items()
                                   if v is not None or k in OPTIONAL_KEYS})
     n = int(p["n"])
-    total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
-                                             p["lmax"], p["v"], p["drum"], p.get("v_stages"),
-                                             p.get("lams"))
-    forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
-                          ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
-                          back=p["sq"], sig_ann=p["sig_ann"])
+
+    def compute(force=None):
+        total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
+                                                 p["lmax"], p["v"], p["drum"], p.get("v_stages"),
+                                                 p.get("lams"), force)
+        forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
+                              ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
+                              back=p["sq"], sig_ann=p["sig_ann"])
+        return total, lams, rows, anneals, forces
+
+    total, lams, rows, anneals, forces = compute()
+    if p["sig_max"] is not None and forces[-1]["sig_out"] > p["sig_max"] + 1e-9:
+        # Готовая проволока прочнее требования: отжиг по прочности. Перебираем место отжига
+        # с конца маршрута и берём то, где прочность наибольшая, но не выше верхней границы
+        # (и, если задана, не ниже нижней).
+        best = None
+        for j in range(n, 1, -1):
+            cand = compute(j)
+            s = cand[4][-1]["sig_out"]
+            if s > p["sig_max"] + 1e-9:
+                continue
+            in_range = p["sig_min"] is None or s >= p["sig_min"] - 1e-9
+            key = (in_range, s)
+            if best is None or key > best[0]:
+                best = (key, cand)
+        if best is not None:
+            total, lams, rows, anneals, forces = best[1]
     gpm = g_per_m(p["rho"], p["dk"])
     weak = [r["i"] for r, f in zip(rows, forces) if f["gamma"] < p["gmin"]]
     over = [r["i"] for r in rows if r["over"]]
@@ -83,9 +104,12 @@ def plan_route(p, group="", mill=None):
 
 
 def suggest_n_full(p, group="", mill=None):
-    """Минимальное число проходов, при котором и вытяжка, и запас прочности в норме."""
+    """Минимальное число проходов, при котором вытяжка, запас прочности и (если задано)
+    требование к прочности готовой проволоки в норме. Если требование по прочности не
+    выполнимо ни при каком числе проходов — минимальное по вытяжке и запасу прочности."""
     from core.drawing import distribute
     from core.util import InputError
+    fallback = None
     for n in range(1, 61):
         lams = distribute((p["d0"] / p["dk"]) ** 2, n, p["ratio"])
         if max(lams) > p["lmax"] or min(lams) <= 1:
@@ -95,5 +119,7 @@ def suggest_n_full(p, group="", mill=None):
         except InputError:
             continue
         if res["gamma_min"] >= p["gmin"]:
-            return n
-    return None
+            if res["strength_ok"]:
+                return n
+            fallback = fallback or n
+    return fallback

@@ -1,18 +1,21 @@
 """Себестоимость передела внутри «Маршрута»: ввод («гармошка» групп) и результаты.
 Продукт, число проходов, отжиги и мощность берутся из рассчитанного маршрута."""
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QMessageBox,
-                               QToolBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel,
+                               QMessageBox, QToolBox, QVBoxLayout, QWidget)
 
 from core.cost import (COPPER_KEYS, COST_NUM_KEYS, ENERGY_BY_ROUTE, ENERGY_METHODS, FORMULAS,
                        FULL_KEYS)
+from core.data import PACKAGES
 from core.util import fmt
 from ui.theme import px
+from ui.export import save_table
 from ui.widgets import Card, FieldError, button, fill_table, label, make_table
 
 ZERO_OK = {"idle_pct", "tax_pct", "overhead_pct", "die_price", "lube_kg_t", "lube_price",
            "other_t", "anneal_cost_t", "repair_pct", "scrap_price", "pack_price", "cu_loss_pct",
-           "mill_price"}
-PERCENT_100 = {"ku_pct", "yield_pct", "load_pct", "eta_pct", "idle_pct"}
+           "mill_price", "rod_vat_pct"}
+PERCENT_100 = {"ku_pct", "yield_pct", "load_pct", "eta_pct", "idle_pct", "rod_vat_pct"}
+OWN_PACK = "своя масса нетто"
 
 # (группа, [(ключ, подпись, по умолчанию)])
 GROUPS = [
@@ -41,9 +44,11 @@ GROUPS = [
                                     ("repair_pct", "Ремонт и обслуживание, % в год", "4")]),
     ("Омеднение", [("cu_um", "Толщина слоя, мкм", "0,3"), ("cu_loss_pct", "Потери меди, %", "10"),
                    ("cu_price", "Цена меди (анодов), руб/кг", "1100")]),
-    ("Полная себестоимость", [("rod_price", "Цена катанки, руб/т", "85000"),
+    ("Полная себестоимость", [("rod_price", "Цена катанки без НДС, руб/т", "85000"),
+                              ("rod_vat_pct", "НДС на катанку, %", "22"),
                               ("scrap_price", "Цена отходов (лома), руб/т", "25000"),
-                              ("pack_price", "Цена упаковки на единицу, руб", "180"),
+                              ("pack_price", "Цена одной упаковки (катушка, кассета, моток), руб",
+                               "180"),
                               ("pack_kg", "Масса нетто в упаковке, кг", "15")]),
 ]
 
@@ -87,6 +92,17 @@ def build_inputs(page, tabs):
                               "расхода на весь маршрут (например, 0,32 волоки на тонну), то "
                               "стойкость ≈ число проходов / норма: при 11 проходах ≈ 34 т.",
                               "note", True), g.rowCount(), 0, 1, 2)
+        if title == "Полная себестоимость":
+            page.cost_pack = QComboBox()
+            page.cost_pack.addItems([OWN_PACK] + [f"{n} — {fmt(kg, 0)} кг" for n, kg in PACKAGES])
+            page.cost_pack.currentIndexChanged.connect(lambda i: _pick_pack(page, i))
+            r = g.rowCount()
+            g.addWidget(QLabel("Упаковка"), r, 0)
+            g.addWidget(page.cost_pack, r, 1)
+            g.addWidget(label("НДС прибавляется к цене катанки; если цена уже с НДС — поставь 0. "
+                              "Упаковка: выбери из списка — масса нетто подставится; цена — за "
+                              "одну единицу (катушку, кассету, бочку, моток).", "note", True),
+                        g.rowCount(), 0, 1, 2)
         if title == "Режим работы":
             g.addWidget(label("Kи — доля смены, когда стан реально тянет: без обрывов, заправки, "
                               "смены катушек и переналадок.", "note", True), g.rowCount(), 0, 1, 2)
@@ -97,9 +113,16 @@ def build_inputs(page, tabs):
     page.checks["cost/copper"] = page.cost_copper
     page.checks["cost/full"] = page.cost_full
     page.checks["cost/on"] = page.cost_on
+    page.combos["cost/pack"] = page.cost_pack
     for w in (page.cost_copper, page.cost_full, page.cost_on):
         w.toggled.connect(page.safe_recalc)
     page.cost_method.currentIndexChanged.connect(page.safe_recalc)
+
+
+def _pick_pack(page, i):
+    """Упаковка из списка: масса нетто подставляется в поле."""
+    if i > 0:
+        page.cost_f["pack_kg"].setText(fmt(PACKAGES[i - 1][1], 0))
 
 
 def _life_from_journal(page):
@@ -138,11 +161,14 @@ def build_results(page, tabs):
     lay.addWidget(page.cost_info)
     bar = QHBoxLayout()
     how = button("Как считается")
+    exp = button("Экспорт в Excel")
     bar.addWidget(how)
+    bar.addWidget(exp)
     bar.addStretch()
     lay.addLayout(bar)
     how.clicked.connect(lambda: QMessageBox.information(page, "Как считается себестоимость",
                                                         "\n\n".join(FORMULAS)))
+    exp.clicked.connect(lambda: export(page))
     tabs.addTab(host, "Себестоимость")
 
 
@@ -225,3 +251,34 @@ def load(page, cost):
     for key, field in page.cost_f.items():
         if key in cost and cost[key] is not None:
             field.setText(fmt(cost[key], 6).rstrip("0").rstrip(","))
+
+
+def export(page):
+    """Себестоимость в Excel: маршрут, исходные данные (цены и нормы) и статьи."""
+    r, c = (page.res or {}).get("cost"), page.cost_inputs
+    if not r or not c:
+        QMessageBox.information(page, "Экспорт", "Сначала получи расчёт себестоимости.")
+        return
+    p, res = page.p, page.res
+    labels = {key: text for _, fields in GROUPS for key, text, _ in fields}
+    info = [("Группа сталей", page.group.currentText()), ("Стан", page.mill.currentText() or "—"),
+            ("Маршрут, мм", f"{fmt(p['d0'], 2)} → {fmt(p['dk'], 2)}"),
+            ("Проходов / отжигов", f"{res['n']} / {res['anneals']}"),
+            ("Скорость на финише, м/с", p["v"]),
+            ("Расчёт электроэнергии", c["energy_method"])]
+    info += [(labels[k], c[k]) for k in labels if k in c]
+    info += [("Факт. производительность, кг/ч", round(r["q_f"], 1)),
+             ("Электроэнергия, кВт·ч/т", round(r["kwh_t"], 1)),
+             ("Выпуск, т/мес", round(r["out_month_t"], 1))]
+    rows = [[n, round(v, 2), round(v / r["conversion"] * 100, 2)] for n, v in r["items"]]
+    rows.append(["ИТОГО передел", round(r["conversion"], 2), 100.0])
+    fills = [None] * len(rows)
+    if c.get("full"):
+        rows += [[n, round(v, 2), ""] for n, v in r["full_items"]]
+        rows.append(["ИТОГО полная себестоимость", round(r["full"], 2), ""])
+        fills = [None] * len(rows)
+    for i, row in enumerate(rows):
+        if row[0].startswith("ИТОГО"):
+            fills[i] = "yellow"
+    save_table(page, "себестоимость_передела", info, ["Статья", "руб/т годной", "Доля, %"],
+               rows, fills)

@@ -11,6 +11,7 @@ from ui.pages.analytics import AnalyticsPage
 from ui.pages.cards import CardsPage
 from ui.pages.copper import CopperPage
 from ui.pages.custom_tol import CustomTolPage
+from ui.pages.grades import GradesPage
 from ui.pages.dies import DiesPage
 from ui.pages.draw import DrawPage
 from ui.pages.mass import MassPage
@@ -30,7 +31,8 @@ SECTIONS = [
     ("Волочение", [("Маршрут", RoutePage), ("Станы", MillsPage), ("Один проход", DrawPage),
                    ("Допуски и волоки", TolerancePage), ("Свои допуски", CustomTolPage)]),
     ("Техкарты", [("Техкарты", CardsPage)]),
-    ("Материалы", [("Масса и упаковка", MassPage), ("Омеднение", CopperPage)]),
+    ("Материалы", [("Масса и упаковка", MassPage), ("Омеднение", CopperPage),
+                   ("Свои марки", GradesPage)]),
     ("Аналитика", [("Аналитика", AnalyticsPage)]),
     ("Справочник", [("Справочник", ReferencePage)]),
     ("Журнал фильер", [("Журнал фильер", DiesPage)]),

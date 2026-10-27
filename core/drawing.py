@@ -30,9 +30,10 @@ def distribute(total, n, ratio):
 
 
 def build_route(d0, dk, n, ratio, limit_pct, lam_max, v_fin, drum_mm, v_stages=None,
-                lams_manual=None):
+                lams_manual=None, force_anneal=None):
     """v_stages — скорости на финише каждого этапа между отжигами (иначе у всех v_fin);
-    lams_manual — ручная раскладка вытяжек (из редактора обжатий), иначе — автоматическая."""
+    lams_manual — ручная раскладка вытяжек (из редактора обжатий), иначе — автоматическая;
+    force_anneal — номер прохода, перед которым отжиг нужен по прочности готовой проволоки."""
     total = (d0 / dk) ** 2
     lams = manual_fits(lams_manual, total, n) or distribute(total, n, ratio)
     if min(lams) <= 1.0:
@@ -45,10 +46,12 @@ def build_route(d0, dk, n, ratio, limit_pct, lam_max, v_fin, drum_mm, v_stages=N
         notes = []
         red_cum = (1 - (d_out / base) ** 2) * 100
         anneal = False
-        if red_cum > limit_pct and d_in < base:
+        by_strength = i == force_anneal and d_in < base
+        if (red_cum > limit_pct or by_strength) and d_in < base:
             anneal, anneals, base = True, anneals + 1, d_in
             red_cum = (1 - (d_out / base) ** 2) * 100
-            notes.append("ОТЖИГ перед проходом")
+            notes.append("ОТЖИГ перед проходом" + (" (по прочности готовой)"
+                                                    if by_strength and red_cum <= limit_pct else ""))
         over = lam > lam_max + 1e-9
         if over:
             notes.append(f"вытяжка выше {fmt(lam_max, 2)}")

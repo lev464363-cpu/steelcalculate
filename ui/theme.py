@@ -9,13 +9,15 @@ THEMES = {
                  muted="#8C96A0", tertiary="#5A636D", border="#262D35", accent="#F3E600",
                  accent_hover="#FFF34D", accent_text="#0D0F12", accent_soft="#2A2810",
                  side="#08090B", side_text="#7D8791", side_active="#13171B", side_title="#FFFFFF",
-                 warn="#FF4D6A", warn_soft="#2B1219", anneal="#2A2810", grid="#1C2228",
+                 warn="#FF4D6A", warn_soft="#2B1219", anneal="#2A2810", ok_soft="#10251B",
+                 grid="#1C2228",
                  line="#00E1F0", glow_alpha=120),
     "light": dict(bg="#F5F5F7", surface="#FFFFFF", surface2="#F2F2F5", text="#1D1D1F",
                   muted="#6E6E73", tertiary="#A1A1A6", border="#DCDCE1", accent="#E8C500",
                   accent_hover="#F5D61A", accent_text="#1D1D1F", accent_soft="#FFF6C7",
                   side="#ECECEF", side_text="#5C5C61", side_active="#E0E0E5", side_title="#1D1D1F",
-                  warn="#D70032", warn_soft="#FDE8EC", anneal="#FFF6C7", grid="#E6E6EB",
+                  warn="#D70032", warn_soft="#FDE8EC", anneal="#FFF6C7", ok_soft="#E5F4EA",
+                  grid="#E6E6EB",
                   line="#0089A3", glow_alpha=60),
 }
 T = dict(THEMES["dark"])  # текущая тема

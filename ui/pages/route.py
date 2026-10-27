@@ -1,7 +1,6 @@
 """Раздел «Маршрут и скорости»: проходы, отжиги, усилия, запас прочности."""
 import math
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QVBoxLayout)
 
@@ -11,6 +10,7 @@ from core.cost import cost_for_route
 from core.mills import find_mill, load_mills
 from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
+from core.forces import fit_n
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
 from core.util import InputError, fmt
 from ui import cost_panel, dies_panel, heat_panel
@@ -19,13 +19,13 @@ from ui.draft_editor import DraftEditor
 from ui.export import save_table
 from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px, sized
-from ui.widgets import (Card, FieldError, Page, button, fill_table, label, make_table, panel,
-                        tab_box, tab_form)
+from ui.widgets import (Card, FieldError, Page, button, fill_groups, fill_table, label,
+                        make_table, panel, tab_box, tab_form)
 from ui.anim import AnimatedTabWidget
 
 
 ROUTE_HEADERS = ["№", "Диаметр на входе, мм", "Диаметр на выходе, мм", "Вытяжка", "Обжатие, %",
-                 "Накопленное обжатие*, %", "Накопленная деформация*",
+                 "Накопл. обжатие*, %", "Накопл. деформация*",
                  "Прочность после прохода, МПа", "Напряжение волочения, МПа", "Запас прочности",
                  "Усилие волочения, кН", "Мощность, кВт", "Скорость проволоки, м/с",
                  "Обороты барабана, об/мин", "Примечание"]
@@ -63,15 +63,7 @@ class RoutePage(Page):
         field, note = adder(g)
         self.group = QComboBox()
         self.group.setMaxVisibleItems(20)
-        family = None
-        for name, grp in GROUPS.items():
-            if grp.get("family") != family:
-                if family is not None:
-                    self.group.insertSeparator(self.group.count())
-                family = grp.get("family")
-            self.group.addItem(name)
-            self.group.setItemData(self.group.count() - 1, f"{family}\n{name}",
-                                   Qt.ItemDataRole.ToolTipRole)
+        fill_groups(self.group, tooltips=True)
         note(self.group)
         self.prep = label("", "note", True)
         note(self.prep)
@@ -122,6 +114,10 @@ class RoutePage(Page):
         self.sigf = field("Прочность после обжатия, МПа", "", "route/sigf")
         self.redref = field("…при суммарном обжатии, %", "", "route/redref")
         self.nh = field("Показатель упрочнения n", "", "route/nh")
+        self.fit_btn = button("Подобрать n по замеру…")
+        self.fit_btn.setToolTip("n — насколько быстро растёт прочность с обжатием. Подбирается по "
+                                "одной замеренной прочности при известном обжатии от катанки.")
+        note(self.fit_btn)
         self.sig_ann = field("Прочность после отжига, МПа", "", "route/sig_ann")
         self.sig_ann.setPlaceholderText("как у заготовки")
         self.ys = field("Отношение σт/σв", "0,85", "route/ys")
@@ -209,6 +205,7 @@ class RoutePage(Page):
         self.combos["route/group"] = self.group
         self.group.currentIndexChanged.connect(self.apply_group)
         self.auto_btn.clicked.connect(self.auto_n)
+        self.fit_btn.clicked.connect(self.fit_hardening)
         self.export_btn.clicked.connect(self.export)
         self.save_btn.clicked.connect(self.save_card)
         self.pdf_btn.clicked.connect(self.to_pdf)
@@ -425,6 +422,7 @@ class RoutePage(Page):
         return find_mill(self.mills, self.mill.currentText())
 
     def on_show(self):
+        fill_groups(self.group, tooltips=True)       # могли добавиться свои марки
         self.reload_mills()
         self.safe_recalc()
 
@@ -476,6 +474,33 @@ class RoutePage(Page):
             return
         self.status.setText("Не удалось подобрать маршрут с допустимыми вытяжкой и запасом "
                             "прочности. Уменьши перевес обжатия, угол волоки или трение.")
+
+    def fit_hardening(self):
+        """Показатель упрочнения по замеру: прочность проволоки после известного обжатия."""
+        try:
+            sig0, sigf, redref = self.sig0.value(), self.sigf.value(), self.redref.value()
+        except FieldError as e:
+            QMessageBox.warning(self, "Показатель упрочнения", str(e))
+            return
+        red, ok = QInputDialog.getDouble(self, "Замер прочности", "Суммарное обжатие от катанки "
+                                         "(или от отжига), %:", 60.0, 1.0, 99.0, 1)
+        if not ok:
+            return
+        sig, ok = QInputDialog.getDouble(self, "Замер прочности", f"Прочность проволоки после "
+                                         f"обжатия {fmt(red, 1)} %, МПа:", sigf, 1.0, 5000.0, 0)
+        if not ok:
+            return
+        try:
+            n = fit_n(sig0, sigf, redref, red, sig)
+        except InputError as e:
+            QMessageBox.warning(self, "Показатель упрочнения", str(e))
+            return
+        self.nh.setText(fmt(n, 2))
+        QMessageBox.information(self, "Показатель упрочнения",
+                                f"n = {fmt(n, 2)}: кривая σв = σв0 + K·εⁿ проходит через "
+                                f"{fmt(sig0, 0)} МПа у катанки, {fmt(sigf, 0)} МПа при "
+                                f"{fmt(redref, 0)} % и твой замер {fmt(sig, 0)} МПа при "
+                                f"{fmt(red, 1)} %.")
 
     def current_params(self):
         """Параметры текущего маршрута или None, если в полях ошибка."""

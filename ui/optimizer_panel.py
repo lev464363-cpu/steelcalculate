@@ -7,7 +7,8 @@ from core.data import GROUPS
 from core.optimize import DEFAULT_LIMITS, optimize
 from core.util import InputError, fmt, num
 from ui.theme import px
-from ui.widgets import FieldError, NumField, button, fill_table, label, make_table, panel
+from ui.widgets import (FieldError, NumField, button, fill_groups, fill_table, label, make_table,
+                        panel)
 
 HEAD = ["Диаметр, мм", "Проходов", "Перевес обжатия", "Отжигов",
         "Скорость стана на финише, м/с", "Вытяжка первого / последнего прохода",
@@ -29,13 +30,7 @@ def build(page, tabs, index):
     g.setContentsMargins(16, 12, 16, 12)
     g.setHorizontalSpacing(12)
     page.o_group = QComboBox()
-    family = None
-    for name, grp in GROUPS.items():
-        if grp.get("family") != family:
-            if family is not None:
-                page.o_group.insertSeparator(page.o_group.count())
-            family = grp.get("family")
-        page.o_group.addItem(name)
+    fill_groups(page.o_group)
     g.addWidget(QLabel("Группа сталей"), 0, 0)
     g.addWidget(page.o_group, 0, 1, 1, 3)
     page.o_rho = NumField("Плотность")

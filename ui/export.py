@@ -35,7 +35,7 @@ def save_table(parent, default_name, info, headers, rows, fills=None):
 
 def _save_xlsx(path, info, headers, rows, fills):
     import openpyxl
-    from openpyxl.styles import Font, PatternFill
+    from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -47,15 +47,21 @@ def _save_xlsx(path, info, headers, rows, fills):
     ws.append(headers)
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")   # длинный заголовок — в 2 строки
     for row, fill in zip(rows, fills):
         ws.append(row)
         if fill in FILLS:
             pf = PatternFill("solid", fgColor=FILLS[fill])
             for cell in ws[ws.max_row]:
                 cell.fill = pf
-    ws.column_dimensions["A"].width = 30 if info else 12
-    for i in range(2, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 14
+    # ширина — по самому длинному слову заголовка и значениям столбца
+    for i, h in enumerate(headers, 1):
+        words = max((len(w) for w in str(h).split()), default=8)
+        vals = max((len(str(row[i - 1])) for row in rows if i - 1 < len(row)), default=0)
+        width = min(max(10, words + 2, vals + 2), 60)
+        if i == 1 and info:
+            width = max(width, min(max(len(str(k)) for k, _ in info) + 2, 60))
+        ws.column_dimensions[get_column_letter(i)].width = width
     wb.save(path)
 
 

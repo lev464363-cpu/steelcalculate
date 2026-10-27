@@ -50,3 +50,23 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
 def eps_from_reduction(red_pct):
     """Истинная деформация по обжатию в процентах: ε = −ln(1 − δ)."""
     return -math.log(1 - red_pct / 100)
+
+
+def fit_n(sig0, sigf, red_ref, red_meas, sig_meas):
+    """Показатель упрочнения n по одному замеру: прочность sig_meas после суммарного обжатия
+    red_meas, %. Кривая σв = σв0 + (σв,ref − σв0)·(ε/ε_ref)ⁿ проходит через обе точки:
+        n = ln((σзам − σв0) / (σв,ref − σв0)) / ln(εзам / ε_ref)."""
+    from core.util import InputError
+    if not 0 < red_meas < 100:
+        raise InputError("Обжатие замера — от 0 до 100 %.")
+    if abs(red_meas - red_ref) < 0.5:
+        raise InputError("Замер должен быть при другом обжатии, чем опорная точка "
+                         f"({red_ref:g} %): нужна вторая точка кривой.")
+    if sig_meas <= sig0:
+        raise InputError("Прочность по замеру должна быть выше прочности заготовки.")
+    e_m, e_r = eps_from_reduction(red_meas), eps_from_reduction(red_ref)
+    n = math.log((sig_meas - sig0) / (sigf - sig0)) / math.log(e_m / e_r)
+    if not 0.05 <= n <= 1.5:
+        raise InputError(f"По замеру выходит n = {n:.2f} — вне разумного диапазона 0,05–1,5. "
+                         "Проверь замер и прочность заготовки и опорную точку.")
+    return n

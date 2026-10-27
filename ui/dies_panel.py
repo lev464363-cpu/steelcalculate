@@ -2,8 +2,9 @@
 import os
 import statistics
 
-from PySide6.QtWidgets import (QApplication, QGridLayout, QHBoxLayout, QInputDialog, QMessageBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QApplication, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
+                               QMessageBox, QVBoxLayout, QWidget)
 
 from core.dies import book_batch, load_journal, plan_dies
 from core.paths import app_dir
@@ -12,9 +13,23 @@ from core.util import fmt
 from ui.theme import T, px
 from ui.widgets import Card, button, fill_table, label, make_table
 
-HEAD = ["№", "Диаметр на выходе, мм", "Вытяжка", "Угол волоки по расчёту, °",
-        "Угол волоки рекомендуемый, °", "Параметр очага деформации", "Калибрующий поясок, мм",
-        "Материал", "Смазка", "В журнале", "Примечание"]
+# (заголовок, подсказка с полным названием)
+COLUMNS = [("№", "Номер прохода"),
+           ("Ø выход,\nмм", "Диаметр проволоки на выходе = рабочий диаметр волоки"),
+           ("Вытяжка", "Коэффициент вытяжки прохода"),
+           ("2α расчёт,\n°", "Рабочий угол по минимуму усилия (формула Зибеля)"),
+           ("2α рекоменд.,\n°", "Рабочий угол, приведённый к стандартному и к практике"),
+           ("Δ очага", "Параметр очага деформации: 2–3 — норма, > 3 — внимание, > 4 — риск "
+                       "разрыва сердцевины"),
+           ("Поясок,\nмм", "Длина калибрующего пояска"),
+           ("Материал волоки", "Рекомендуемый материал волоки"),
+           ("Смазка", "Мокрое или сухое волочение"),
+           ("Фильера\nиз журнала", "Номер подобранной фильеры из журнала; «к заказу» — "
+                                   "подходящей нет"),
+           ("Примечание", "")]
+HEAD = [h for h, _ in COLUMNS]
+NUM_COLS = (0, 1, 2, 3, 4, 5, 6)
+MATERIAL_COL = 7
 
 
 def build_results(page, tabs):
@@ -36,6 +51,13 @@ def build_results(page, tabs):
                                     col=2)
     lay.addLayout(g)
     page.die_table = make_table(HEAD)
+    for i, (_, tip) in enumerate(COLUMNS):
+        if tip:
+            page.die_table.horizontalHeaderItem(i).setToolTip(tip)
+    page.die_table.setWordWrap(True)
+    hh = page.die_table.horizontalHeader()
+    hh.setSectionResizeMode(MATERIAL_COL, QHeaderView.ResizeMode.Interactive)
+    hh.resizeSection(MATERIAL_COL, px(230))       # длинное название материала — переносом
     page.die_table.setMinimumHeight(px(260))
     lay.addWidget(page.die_table, 1)
     bar = QHBoxLayout()
@@ -81,13 +103,18 @@ def show(page, res, p, group):
     for x in page.die_plan:
         rows.append((x["i"], fmt(x["d_out"], 3), fmt(x["lam"], 3), fmt(x["two_opt"], 1),
                      x["two_std"], fmt(x["delta"], 2), fmt(x["bearing"], 2), x["material"],
-                     "мокрое" if x["wet"] else "сухое", x["stock"] or "—", x["notes"]))
-        colors.append((T["warn_soft"], T["warn"]) if "риск" in x["notes"] else
-                      (None, None) if x["stock"] else (T["anneal"], None))
+                     "мокрое" if x["wet"] else "сухое", x["stock"] or "к заказу", x["notes"]))
         # Δ 3–4 на чистовом проходе — предупреждение без красного
+        colors.append((T["warn_soft"], T["warn"]) if "риск" in x["notes"] else
+                      (T["ok_soft"], None) if x["stock"] else (T["anneal"], None))
     fill_table(page.die_table, rows, colors)
-    page.die_msg.setText("Жёлтым — волоки нет в журнале (к заказу). Расчёт усилий сейчас ведётся с "
-                         f"полууглом {fmt(p['alpha'], 1)}° для всех проходов.")
+    center = Qt.AlignmentFlag.AlignCenter
+    for r in range(len(rows)):
+        for c in NUM_COLS:
+            page.die_table.item(r, c).setTextAlignment(center)
+    page.die_msg.setText("Зелёным — фильера есть в журнале, жёлтым — к заказу, красным — риск "
+                         "разрыва сердцевины. Подсказка к столбцу — наведи на заголовок. Расчёт "
+                         f"усилий ведётся с полууглом {fmt(p['alpha'], 1)}° для всех проходов.")
 
 
 def clear(page):
