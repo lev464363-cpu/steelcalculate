@@ -580,4 +580,6 @@ class RoutePage(Page):
                          round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
                          round(r["rpm"], 1) if r["rpm"] else "", r["notes"]])
             fills.append("yellow" if r["anneal"] else ("red" if f["gamma"] < p["gmin"] else None))
-        save_table(self, "маршрут_волочения", info, ROUTE_HEADERS, rows, fills)
+        save_table(self, "маршрут_волочения", info, ROUTE_HEADERS, rows, fills,
+                   sheet_name="Волочение",
+                   extra_sheets=[("Себестоимость", cost_panel.export_rows(self))])
