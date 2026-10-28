@@ -13,6 +13,7 @@ from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px
 from ui.widgets import Page, button, fill_table, label, make_table, tab_box
 from ui.anim import AnimatedTabWidget
+from ui.popup import notify
 
 HEAD = ["Название", "Стан", "Группа сталей", "Маршрут, мм", "Проходов", "Отжигов", "Мин. запас прочности",
         "Произв., кг/ч", "Передел, руб/т", "Изменена"]
@@ -42,6 +43,8 @@ class CardsPage(Page):
             bar.addWidget(b)
         bar.addStretch()
         lst.addLayout(bar)
+        self.empty = label("", "muted", True)        # подсказка при пустом списке — не ошибка
+        lst.addWidget(self.empty)
         lst.addWidget(self.status)
         cmp = tab_box(self.tabs, "Сравнение")
         self.cmp_note = label("Выдели в списке 2–3 техкарты (с Ctrl) и нажми «Сравнить выбранные». "
@@ -106,9 +109,9 @@ class CardsPage(Page):
                              "—", "—", "—", "—", "—", "ошибка в данных"))
                 colors.append((T["warn_soft"], T["warn"]))
         fill_table(self.table, rows, colors)
-        if not self.cards and not self.status.text():
-            self.status.setText("Техкарт пока нет. Рассчитай маршрут и нажми «Сохранить техкарту» "
-                                "в разделе «Маршрут и скорости».")
+        self.empty.setText("" if self.cards else
+                           "Техкарт пока нет. Рассчитай маршрут и нажми «Сохранить техкарту» — "
+                           "«Волочение → Маршрут».")
 
     def selected(self):
         return sorted({i.row() for i in self.table.selectionModel().selectedRows()})
@@ -116,7 +119,7 @@ class CardsPage(Page):
     def _one(self):
         idx = self.selected()
         if len(idx) != 1:
-            QMessageBox.information(self, "Техкарты", "Выдели одну техкарту.")
+            notify(self, "Выдели одну техкарту", "info")
             return None
         return idx[0]
 
@@ -153,7 +156,7 @@ class CardsPage(Page):
     def delete_selected(self):
         idx = self.selected()
         if not idx:
-            QMessageBox.information(self, "Техкарты", "Выдели техкарты для удаления.")
+            notify(self, "Выдели техкарты для удаления", "info")
             return
         names = [self.cards[i]["name"] for i in idx]
         if QMessageBox.question(self, "Удалить", "Удалить техкарты?\n\n" + "\n".join(names)) \
@@ -172,7 +175,7 @@ class CardsPage(Page):
     def compare_selected(self):
         idx = self.selected()
         if not 2 <= len(idx) <= 3:
-            QMessageBox.information(self, "Сравнение", "Выдели 2 или 3 техкарты (с клавишей Ctrl).")
+            notify(self, "Выдели 2 или 3 техкарты", "info", detail="Щёлкай по строкам с клавишей Ctrl.")
             return
         if any(self.results[i] is None for i in idx):
             QMessageBox.warning(self, "Сравнение", "В одной из техкарт ошибка в данных.")

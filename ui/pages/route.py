@@ -16,7 +16,9 @@ from core.util import InputError, fmt
 from ui import cost_panel, dies_panel, heat_panel
 from ui.chart import RouteChart
 from ui.draft_editor import DraftEditor
-from ui.export import save_table
+from ui.export import save_workbook, table_sheet
+from ui.export_dialog import ExportDialog
+from ui.popup import notify
 from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px, sized
 from ui.widgets import (Card, FieldError, Page, button, fill_groups, fill_table, label,
@@ -188,16 +190,20 @@ class RoutePage(Page):
         heat_panel.build_results(self, results)
         dies_panel.build_results(self, results)
 
-        bar = QHBoxLayout()
+        bar = QGridLayout()             # 2×2 — не раздвигает окно
+        bar.setHorizontalSpacing(8)
+        bar.setVerticalSpacing(8)
         self.save_btn = button("Сохранить техкарту", primary=True)
-        self.pdf_btn = button("В PDF")
+        self.export_btn = button("Экспорт в Excel…")
+        self.export_btn.setToolTip("Маршрут, себестоимость, нагрев, волоки — что выгрузить, "
+                                   "выбирается в окне экспорта.")
+        self.pdf_btn = button("Техкарта в PDF")
         self.op_btn = button("Карта оператора")
         self.op_btn.setToolTip("Маршрутная карта для оператора стана: барабаны, волоки и номера "
                                "фильер из журнала, скорости и графы для замеров.")
-        self.export_btn = button("Экспорт в Excel")
-        for b in (self.save_btn, self.pdf_btn, self.op_btn, self.export_btn):
-            bar.addWidget(b)
-        bar.addStretch()
+        for i, b in enumerate((self.save_btn, self.export_btn, self.pdf_btn, self.op_btn)):
+            bar.addWidget(b, i // 2, i % 2)
+        bar.setColumnStretch(2, 1)
         right.addLayout(bar)
         main.addLayout(right, 1)
         self.body.addLayout(main, 1)
@@ -212,6 +218,7 @@ class RoutePage(Page):
         self.op_btn.clicked.connect(self.to_operator)
         self.texts["route/mill"] = self.mill.lineEdit()
         self.manual = None                # ручная раскладка из редактора обжатий
+        self.export_cols = None           # выбранные в прошлый раз столбцы проходов
         self.draft.dragged.connect(self.on_drag)
         self.draft.unpinned.connect(self.on_unpin)
         self.reset_btn.clicked.connect(self.reset_manual)
@@ -496,16 +503,14 @@ class RoutePage(Page):
             QMessageBox.warning(self, "Показатель упрочнения", str(e))
             return
         self.nh.setText(fmt(n, 2))
-        QMessageBox.information(self, "Показатель упрочнения",
-                                f"n = {fmt(n, 2)}: кривая σв = σв0 + K·εⁿ проходит через "
-                                f"{fmt(sig0, 0)} МПа у катанки, {fmt(sigf, 0)} МПа при "
-                                f"{fmt(redref, 0)} % и твой замер {fmt(sig, 0)} МПа при "
-                                f"{fmt(red, 1)} %.")
+        notify(self, f"Показатель упрочнения n = {fmt(n, 2)}", "ok",
+               detail=f"Кривая проходит через {fmt(sig0, 0)} МПа у катанки, {fmt(sigf, 0)} МПа "
+                      f"при {fmt(redref, 0)} % и замер {fmt(sig, 0)} МПа при {fmt(red, 1)} %.")
 
     def current_params(self):
         """Параметры текущего маршрута или None, если в полях ошибка."""
         if not self.rows:
-            QMessageBox.information(self, "Маршрут", "Сначала получи корректный маршрут.")
+            notify(self, "Сначала получи корректный маршрут", "warn")
             return None
         return {k: self.p[k] for k in PARAM_KEYS}
 
@@ -536,9 +541,8 @@ class RoutePage(Page):
             return
         extra = "" if self.cost_inputs else (" Себестоимость не сохранена: она выключена или в "
                                              "ценах есть ошибка.")
-        QMessageBox.information(self, "Готово", f"Техкарта «{name}» сохранена. Её можно открыть, "
-                                                "сравнить и распечатать в разделе «Техкарты»."
-                                + extra)
+        notify(self, f"Техкарта «{name}» сохранена", "ok",
+               detail="Открыть, сравнить и распечатать — в разделе «Техкарты»." + extra)
 
     def to_pdf(self):
         p = self.current_params()
@@ -579,10 +583,37 @@ class RoutePage(Page):
         self._loading = False
         self.safe_recalc()
 
-    def export(self):
+    def export(self, preset=None):
+        """Экспорт в Excel: окно выбора разделов и столбцов, затем книга — лист на раздел."""
         if not self.rows:
-            QMessageBox.information(self, "Экспорт", "Сначала получи корректный маршрут.")
+            notify(self, "Сначала получи корректный маршрут.", "warn")
             return
+        cost_ok = cost_panel.has_cost(self)
+        on = preset or {"params", "passes", "cost", "cost_in"}
+        n_items = len(self.res["cost"]["items"]) + len(self.res["cost"]["full_items"]) \
+            if cost_ok else 0
+        n_pick = n_items - len(self.cost_skip) if cost_ok else 0
+        sections = [
+            ("params", "Параметры маршрута", "Группа, диаметры, скорость, металл и пределы.",
+             "params" in on),
+            ("passes", "Проходы", "Таблица проходов — отметь нужные столбцы.", "passes" in on),
+            ("cost", "Себестоимость: статьи",
+             f"Отмечено галочками в таблице «Себестоимость»: {n_pick} из {n_items}."
+             if cost_ok else "Себестоимость не рассчитана (вкладка «Экономика»).",
+             "cost" in on, cost_ok),
+            ("cost_in", "Себестоимость: цены и нормы", "Исходные данные вкладки «Экономика».",
+             "cost_in" in on, cost_ok),
+            ("heat", "Нагрев и стан", "Температуры, барабаны, загрузка привода, скольжение.",
+             "heat" in on),
+            ("dies", "Волоки", "Углы, поясок, материал, фильеры из журнала.",
+             "dies" in on, bool(self.die_plan)),
+        ]
+        dlg = ExportDialog(self, sections, ROUTE_HEADERS, "passes", self.export_cols)
+        if dlg.exec() != ExportDialog.DialogCode.Accepted:
+            return
+        chosen, cols = dlg.chosen(), dlg.chosen_columns()
+        self.export_cols = cols
+        sheets = []
         p = self.p
         info = [("Группа сталей", self.group.currentText()), ("Исходный диаметр, мм", p["d0"]),
                 ("Готовый диаметр, мм", p["dk"]), ("Проходов", self.n_used),
@@ -597,12 +628,30 @@ class RoutePage(Page):
                 ("Прочность после отжига, МПа", p["sig_ann"] if p["sig_ann"] else "как у заготовки"),
                 ("Прочность готовой по ГОСТ/ТУ, МПа",
                  " – ".join(fmt(x, 0) if x else "—" for x in (p["sig_min"], p["sig_max"])))]
-        rows, fills = [], []
-        for r, f in zip(self.rows, self.forces):
-            rows.append([r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),
-                         round(r["red"], 2), round(r["red_cum"], 2), round(r["eps"], 4),
-                         round(f["sig_out"]), round(f["sig_d"]), round(f["gamma"], 3),
-                         round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
-                         round(r["rpm"], 1) if r["rpm"] else "", r["notes"]])
-            fills.append("yellow" if r["anneal"] else ("red" if f["gamma"] < p["gmin"] else None))
-        save_table(self, "маршрут_волочения", info, ROUTE_HEADERS, rows, fills)
+        if "params" in chosen:
+            sheets.append(("Параметры маршрута", [], ["Параметр", "Значение"],
+                           [list(x) for x in info], None))
+        if "passes" in chosen:
+            idx = [i for i, h in enumerate(ROUTE_HEADERS) if h in cols] or \
+                list(range(len(ROUTE_HEADERS)))
+            rows, fills = [], []
+            for r, f in zip(self.rows, self.forces):
+                full = [r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),
+                        round(r["red"], 2), round(r["red_cum"], 2), round(r["eps"], 4),
+                        round(f["sig_out"]), round(f["sig_d"]), round(f["gamma"], 3),
+                        round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
+                        round(r["rpm"], 1) if r["rpm"] else "", r["notes"]]
+                rows.append([full[i] for i in idx])
+                fills.append("yellow" if r["anneal"] else
+                             ("red" if f["gamma"] < p["gmin"] else None))
+            sheets.append(("Проходы", [], [ROUTE_HEADERS[i] for i in idx], rows, fills))
+        if cost_ok and chosen & {"cost", "cost_in"}:
+            sheets += cost_panel.cost_sheets(self, "cost" in chosen, "cost_in" in chosen)
+        if "heat" in chosen:
+            sheets.append(table_sheet("Нагрев и стан", self.heat_table))
+        if "dies" in chosen:
+            sheets.append(table_sheet("Волоки", self.die_table))
+        path = save_workbook(self, f"маршрут {default_name(self.group.currentText(), p, '')}",
+                             sheets)
+        if path:
+            notify(self, f"Сохранено листов: {len(sheets)}", "ok", detail=path)

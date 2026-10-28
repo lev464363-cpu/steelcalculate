@@ -1,30 +1,19 @@
-"""Элементы в стиле HUD: панели со срезанными углами, акцентные метки, линия заголовка, сетка фона.
-Рисуются вручную (QPainter): таблица стилей Qt не умеет срезанные углы."""
+"""Фон панелей и карточек, линия заголовка, фон раздела. Рисуются вручную (QPainter): так
+получаются мягкие градиенты и скругления, которых нет в таблице стилей Qt."""
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QFrame, QWidget
 
 from ui.theme import T, px
 
 
-def hud_path(r, cut):
-    """Контур со срезанными верхним правым и нижним левым углами."""
-    path = QPainterPath()
-    path.moveTo(r.left(), r.top())
-    path.lineTo(r.right() - cut, r.top())
-    path.lineTo(r.right(), r.top() + cut)
-    path.lineTo(r.right(), r.bottom())
-    path.lineTo(r.left() + cut, r.bottom())
-    path.lineTo(r.left(), r.bottom() - cut)
-    path.closeSubpath()
-    return path
-
-
 def paint_hud(p, rect, cut=None, tick=True, accent=None):
-    """Фон с лёгким вертикальным градиентом, тонкая рамка и акцентная метка в левом верхнем углу."""
-    cut = px(12) if cut is None else cut
+    """Карточка: скруглённый фон с мягким вертикальным градиентом, тонкая рамка и светлый блик
+    по верхнему краю. tick — короткая акцентная полоска слева сверху (для карточек результатов)."""
+    radius = px(14) if cut is None else cut + px(4)
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
-    path = hud_path(r, cut)
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
     g = QLinearGradient(r.topLeft(), r.bottomLeft())
     g.setColorAt(0, QColor(T["surface2"]))
     g.setColorAt(1, QColor(T["surface"]))
@@ -32,15 +21,14 @@ def paint_hud(p, rect, cut=None, tick=True, accent=None):
     p.setPen(QPen(QColor(T["border"]), 1))
     p.setBrush(g)
     p.drawPath(path)
+    hl = QColor(T["text"])
+    hl.setAlpha(14)
+    p.setPen(QPen(hl, 1))
+    p.drawLine(QPointF(r.left() + radius, r.top() + 1), QPointF(r.right() - radius, r.top() + 1))
     if tick:
-        a = QColor(accent or T["accent"])
-        p.setPen(QPen(a, 2))
-        p.drawLine(QPointF(r.left() + 1, r.top() + 1), QPointF(r.left() + px(26), r.top() + 1))
-        p.drawLine(QPointF(r.left() + 1, r.top() + 1), QPointF(r.left() + 1, r.top() + px(10)))
-        # маленький маркер на срезанном углу
-        p.setPen(QPen(QColor(T["tertiary"]), 1))
-        p.drawLine(QPointF(r.right() - cut + px(4), r.top() + px(2)),
-                   QPointF(r.right() - px(2), r.top() + cut - px(4)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(accent or T["accent"]))
+        p.drawRoundedRect(QRectF(r.left() + px(16), r.top() - 0.5, px(28), px(3)), 1.5, 1.5)
 
 
 class HudPanel(QFrame):
@@ -68,30 +56,25 @@ class HudRule(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, y = self.width(), self.height() / 2
-        p.setPen(QPen(QColor(T["border"]), 1))
+        g = QLinearGradient(QPointF(0, y), QPointF(w, y))
+        a, b = QColor(T["accent"]), QColor(T["border"])
+        b.setAlpha(0)
+        g.setColorAt(0, a)
+        g.setColorAt(0.12, QColor(T["border"]))
+        g.setColorAt(1, b)
+        p.setPen(QPen(g, 1.5))
         p.drawLine(QPointF(0, y), QPointF(w, y))
-        p.setPen(QPen(QColor(T["accent"]), 2))
-        p.drawLine(QPointF(0, y), QPointF(px(64), y))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(T["tertiary"]))
-        for i in range(3):
-            x = w - px(8) - i * px(10)
-            p.drawRect(QRectF(x, y - px(2), px(4), px(4)))
         p.end()
 
 
 def paint_grid(p, rect):
-    """Едва заметная техническая сетка на фоне раздела."""
+    """Фон раздела: ровный цвет и мягкое акцентное свечение в верхнем углу."""
     p.fillRect(rect, QColor(T["bg"]))
-    c = QColor(T["grid"])
-    c.setAlpha(110)
-    p.setPen(QPen(c, 1))
-    step = px(40)
-    x = rect.left()
-    while x < rect.right():
-        p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
-        x += step
-    y = rect.top()
-    while y < rect.bottom():
-        p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
-        y += step
+    glow = QColor(T["accent"])
+    glow.setAlpha(18 if T["bg"].lower() < "#808080" else 30)
+    g = QRadialGradient(QPointF(rect.right() - rect.width() * 0.15, rect.top()),
+                        max(rect.width(), rect.height()) * 0.55)
+    g.setColorAt(0, glow)
+    glow.setAlpha(0)
+    g.setColorAt(1, glow)
+    p.fillRect(rect, g)

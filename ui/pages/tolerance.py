@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel
 from core.tolerance import (LEGACY, all_standards, check_measure, curvature, custom_row,
                             die_plan, ovality_share, tolerance)
 from core.util import InputError, fmt
-from ui.widgets import Card, FieldError, Page, cards_row, label, panel
+from ui.widgets import Card, FieldError, Page, cards_row, compact_combo, label, panel
 
 STATE_TEXT = {"ok": "в допуске", "near": "у верхней границы — готовить замену волоки",
               "out": "вне допуска"}
@@ -22,6 +22,7 @@ class TolerancePage(Page):
         g.addWidget(QLabel("Допуск"), 0, 0)
         self.std = QComboBox()
         self.std.addItems(all_standards())
+        compact_combo(self.std)
         g.addWidget(self.std, 0, 1)
         self.d = self.add_field(g, 1, "Номинальный диаметр, мм", "1,2", "tol/d")
         self.reserve = self.add_field(g, 2, "Новая волока выше нижней границы на, % поля", "25",

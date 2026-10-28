@@ -48,7 +48,7 @@ class Section(QWidget):
         self.setObjectName("section")
         self.pages = pages
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(36, 26, 36, 26)
+        lay.setContentsMargins(28, 22, 28, 22)
         lay.setSpacing(4)
         k = QLabel(f"МОДУЛЬ {index + 1:02d}  //  {title.upper()}")
         k.setProperty("role", "kicker")

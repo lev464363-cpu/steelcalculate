@@ -1,21 +1,35 @@
 """Себестоимость передела внутри «Маршрута»: ввод («гармошка» групп) и результаты.
 Продукт, число проходов, отжиги и мощность берутся из рассчитанного маршрута."""
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel,
-                               QMessageBox, QToolBox, QVBoxLayout, QWidget)
+                               QMessageBox, QVBoxLayout, QWidget)
 
 from core.cost import (COPPER_KEYS, COST_NUM_KEYS, ENERGY_BY_ROUTE, ENERGY_METHODS, FORMULAS,
                        FULL_KEYS)
 from core.data import PACKAGES
 from core.util import fmt
 from ui.theme import px
-from ui.export import save_table
-from ui.widgets import Card, FieldError, button, fill_table, label, make_table
+from ui.widgets import (SHARE_ROLE, Card, Collapsible, FieldError, ShareBarDelegate, button,
+                        compact_combo, dot_icon, fill_table, label, make_table)
+from ui.popup import notify
 
 ZERO_OK = {"idle_pct", "tax_pct", "overhead_pct", "die_price", "lube_kg_t", "lube_price",
            "other_t", "anneal_cost_t", "repair_pct", "scrap_price", "pack_price", "cu_loss_pct",
            "mill_price", "rod_vat_pct"}
 PERCENT_100 = {"ku_pct", "yield_pct", "load_pct", "eta_pct", "idle_pct", "rod_vat_pct"}
 OWN_PACK = "своя масса нетто"
+# цвет раздела ввода; тем же цветом помечены статьи в таблице результатов
+SECTION_COLORS = {"Режим работы": "#8C96A0", "Электроэнергия": "#F2B705",
+                  "Персонал": "#5B9BFF", "Инструмент и материалы": "#14C4A8",
+                  "Амортизация и ремонт стана": "#B07CFF", "Омеднение": "#E07A3F",
+                  "Полная себестоимость": "#FF5C8A"}
+ITEM_SECTION = {"Электроэнергия": "Электроэнергия",
+                "Оплата труда со страховыми взносами": "Персонал", "Цеховые накладные": "Персонал",
+                "Фильеры": "Инструмент и материалы", "Смазка": "Инструмент и материалы",
+                "Отжиги": "Инструмент и материалы", "Прочие материалы": "Инструмент и материалы",
+                "Амортизация стана": "Амортизация и ремонт стана",
+                "Ремонт и обслуживание стана": "Амортизация и ремонт стана",
+                "Медь на омеднение": "Омеднение"}
 
 # (группа, [(ключ, подпись, по умолчанию)])
 GROUPS = [
@@ -63,20 +77,23 @@ def build_inputs(page, tabs):
     lay.addWidget(page.cost_on)
     lay.addWidget(label("Цены и нормы — пример, подставь свои. Продукт, проходы, отжиги и "
                         "мощность берутся из маршрута.", "note", True))
-    box = QToolBox()
+    box = QWidget()
+    blay = QVBoxLayout(box)
+    blay.setContentsMargins(0, 4, 0, 0)
+    blay.setSpacing(8)
     lay.addWidget(box, 1)
     page.cost_box = box
+    page.cost_sections = {}
     page.cost_f = {}
     page.cost_method = QComboBox()
     page.cost_method.addItems(ENERGY_METHODS)
+    compact_combo(page.cost_method, 20)
     page.cost_copper = QCheckBox("Учитывать медь на омеднение")
     page.cost_full = QCheckBox("Добавить катанку, отходы и упаковку")
-    for title, fields in GROUPS:
-        w = QWidget()
-        g = QGridLayout(w)
-        g.setContentsMargins(4, 6, 4, 6)
-        g.setHorizontalSpacing(12)
-        g.setVerticalSpacing(6)
+    for gi, (title, fields) in enumerate(GROUPS):
+        sec = Collapsible(title, SECTION_COLORS[title], open_=gi == 0)
+        page.cost_sections[title] = sec
+        g = sec.grid
         extra = {"Электроэнергия": page.cost_method, "Омеднение": page.cost_copper,
                  "Полная себестоимость": page.cost_full}.get(title)
         if extra is not None:
@@ -95,6 +112,7 @@ def build_inputs(page, tabs):
         if title == "Полная себестоимость":
             page.cost_pack = QComboBox()
             page.cost_pack.addItems([OWN_PACK] + [f"{n} — {fmt(kg, 0)} кг" for n, kg in PACKAGES])
+            compact_combo(page.cost_pack, 16)
             page.cost_pack.currentIndexChanged.connect(lambda i: _pick_pack(page, i))
             r = g.rowCount()
             g.addWidget(QLabel("Упаковка"), r, 0)
@@ -106,8 +124,8 @@ def build_inputs(page, tabs):
         if title == "Режим работы":
             g.addWidget(label("Kи — доля смены, когда стан реально тянет: без обрывов, заправки, "
                               "смены катушек и переналадок.", "note", True), g.rowCount(), 0, 1, 2)
-        g.setRowStretch(g.rowCount(), 1)
-        box.addItem(w, title)
+        blay.addWidget(sec)
+    blay.addStretch()
     tabs.addTab(host, "Экономика")
     page.combos["cost/method"] = page.cost_method
     page.checks["cost/copper"] = page.cost_copper
@@ -117,6 +135,42 @@ def build_inputs(page, tabs):
     for w in (page.cost_copper, page.cost_full, page.cost_on):
         w.toggled.connect(page.safe_recalc)
     page.cost_method.currentIndexChanged.connect(page.safe_recalc)
+    # сводка в заголовках разделов — сразу видно, что задано, без раскрытия
+    for w in list(page.cost_f.values()):
+        w.textChanged.connect(lambda *_: update_summaries(page))
+    for w in (page.cost_copper, page.cost_full):
+        w.toggled.connect(lambda *_: update_summaries(page))
+    page.cost_method.currentIndexChanged.connect(lambda *_: update_summaries(page))
+    update_summaries(page)
+
+
+def update_summaries(page):
+    def v(key):
+        return page.cost_f[key].text().strip() or "—"
+    try:
+        mill = f"{float(v('mill_price').replace(',', '.')) / 1e6:g}".replace(".", ",")
+    except ValueError:
+        mill = v("mill_price")
+    by_route = page.cost_method.currentText() == ENERGY_BY_ROUTE
+    text = {
+        "Режим работы": f"{v('shifts')} см. × {v('shift_h')} ч, {v('days')} дн./год · "
+                        f"Kи {v('ku_pct')} % · выход годного {v('yield_pct')} %",
+        "Электроэнергия": f"{v('p_inst')} кВт · {v('tariff')} руб/кВт·ч · "
+                          + ("по расчёту маршрута" if by_route else f"загрузка {v('load_pct')} %"),
+        "Персонал": f"{v('workers')} чел. × {v('rate')} руб/ч · взносы {v('tax_pct')} % · "
+                    f"накладные {v('overhead_pct')} %",
+        "Инструмент и материалы": f"фильера {v('die_price')} руб / {v('die_life_t')} т · смазка "
+                                  f"{v('lube_kg_t')} кг/т · отжиг {v('anneal_cost_t')} руб/т",
+        "Амортизация и ремонт стана": f"стан {mill} млн руб · {v('mill_years')} лет · ремонт "
+                                      f"{v('repair_pct')} %/год",
+        "Омеднение": (f"слой {v('cu_um')} мкм · потери {v('cu_loss_pct')} % · "
+                      f"{v('cu_price')} руб/кг") if page.cost_copper.isChecked() else "не учитывается",
+        "Полная себестоимость": (f"катанка {v('rod_price')} руб/т + НДС {v('rod_vat_pct')} % · "
+                                 f"упаковка {v('pack_price')} руб / {v('pack_kg')} кг")
+                                if page.cost_full.isChecked() else "только передел",
+    }
+    for title, sec in page.cost_sections.items():
+        sec.set_summary(text.get(title, ""))
 
 
 def _pick_pack(page, i):
@@ -129,12 +183,12 @@ def _life_from_journal(page):
     from core.dies import actual_life, load_journal
     life = actual_life(load_journal())
     if not life:
-        QMessageBox.information(page, "Стойкость", "В журнале нет снятых фильер с записанной "
-                                                   "наработкой — оставлена норма.")
+        notify(page, "Стойкость не изменена", "info",
+               detail="В журнале нет снятых фильер с записанной наработкой — оставлена норма.")
         return
     page.cost_f["die_life_t"].setText(fmt(life[0], 1))
-    QMessageBox.information(page, "Стойкость", f"Взята фактическая стойкость {fmt(life[0], 1)} т "
-                                               f"(среднее по {life[1]} снятым фильерам).")
+    notify(page, f"Стойкость {fmt(life[0], 1)} т — из журнала", "ok",
+           detail=f"Среднее по {life[1]} снятым фильерам.")
     page.safe_recalc()
 
 
@@ -155,7 +209,12 @@ def build_results(page, tabs):
     page.cost_msg = label("", "error", True)
     lay.addWidget(page.cost_msg)
     page.cost_table = make_table(["Статья", "руб/т годной", "Доля, %"])
+    page.cost_table.setItemDelegateForColumn(2, ShareBarDelegate(page.cost_table))
+    page.cost_table.horizontalHeader().setMinimumSectionSize(px(90))
     page.cost_table.setMinimumHeight(px(260))
+    page.cost_table.setToolTip("Галочка у статьи — включать её в экспорт в Excel.")
+    page.cost_skip = set()          # статьи, которые не выгружать (сняты галочки)
+    page.cost_table.itemChanged.connect(lambda it: _on_check(page, it))
     lay.addWidget(page.cost_table, 1)
     page.cost_info = label("", "muted", True)
     lay.addWidget(page.cost_info)
@@ -222,14 +281,42 @@ def show(page, r, c):
     if c["full"]:
         rows += [(n, fmt(v, 0), "") for n, v in r["full_items"]]
         rows.append(("ИТОГО полная себестоимость", fmt(r["full"], 0), ""))
-    fill_table(page.cost_table, rows)
+    t = page.cost_table
+    t.blockSignals(True)
+    fill_table(t, rows)
+    full_names = {n for n, _ in r["full_items"]}
     for i, row in enumerate(rows):
-        if row[0].startswith("ИТОГО"):
+        name, first = row[0], t.item(i, 0)
+        right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        t.item(i, 1).setTextAlignment(right)
+        t.item(i, 2).setTextAlignment(right)
+        if name.startswith("ИТОГО"):
             for j in range(3):
-                it = page.cost_table.item(i, j)
+                it = t.item(i, j)
                 f = it.font()
                 f.setBold(True)
                 it.setFont(f)
+            continue
+        sec = ITEM_SECTION.get(name, "Полная себестоимость" if name in full_names else None)
+        color = SECTION_COLORS.get(sec, "#8C96A0")
+        first.setIcon(dot_icon(color))
+        first.setFlags(first.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        first.setCheckState(Qt.CheckState.Unchecked if name in page.cost_skip
+                            else Qt.CheckState.Checked)
+        if name not in full_names:
+            val = dict(r["items"])[name]
+            t.item(i, 2).setData(SHARE_ROLE, (val / r["conversion"], color))
+    t.blockSignals(False)
+
+
+def _on_check(page, item):
+    """Галочка у статьи: включать ли её в экспорт."""
+    if item.column() != 0 or not item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+        return
+    if item.checkState() == Qt.CheckState.Checked:
+        page.cost_skip.discard(item.text())
+    else:
+        page.cost_skip.add(item.text())
 
 
 def clear(page, message=""):
@@ -254,31 +341,39 @@ def load(page, cost):
 
 
 def export(page):
-    """Себестоимость в Excel: маршрут, исходные данные (цены и нормы) и статьи."""
-    r, c = (page.res or {}).get("cost"), page.cost_inputs
-    if not r or not c:
-        QMessageBox.information(page, "Экспорт", "Сначала получи расчёт себестоимости.")
-        return
-    p, res = page.p, page.res
-    labels = {key: text for _, fields in GROUPS for key, text, _ in fields}
-    info = [("Группа сталей", page.group.currentText()), ("Стан", page.mill.currentText() or "—"),
-            ("Маршрут, мм", f"{fmt(p['d0'], 2)} → {fmt(p['dk'], 2)}"),
-            ("Проходов / отжигов", f"{res['n']} / {res['anneals']}"),
-            ("Скорость на финише, м/с", p["v"]),
-            ("Расчёт электроэнергии", c["energy_method"])]
-    info += [(labels[k], c[k]) for k in labels if k in c]
-    info += [("Факт. производительность, кг/ч", round(r["q_f"], 1)),
-             ("Электроэнергия, кВт·ч/т", round(r["kwh_t"], 1)),
-             ("Выпуск, т/мес", round(r["out_month_t"], 1))]
-    rows = [[n, round(v, 2), round(v / r["conversion"] * 100, 2)] for n, v in r["items"]]
-    rows.append(["ИТОГО передел", round(r["conversion"], 2), 100.0])
-    fills = [None] * len(rows)
-    if c.get("full"):
-        rows += [[n, round(v, 2), ""] for n, v in r["full_items"]]
-        rows.append(["ИТОГО полная себестоимость", round(r["full"], 2), ""])
-        fills = [None] * len(rows)
-    for i, row in enumerate(rows):
-        if row[0].startswith("ИТОГО"):
-            fills[i] = "yellow"
-    save_table(page, "себестоимость_передела", info, ["Статья", "руб/т годной", "Доля, %"],
-               rows, fills)
+    """Кнопка на вкладке «Себестоимость»: общее окно экспорта с отмеченной себестоимостью."""
+    page.export(preset={"params", "cost", "cost_in"})
+
+
+def has_cost(page):
+    return bool((page.res or {}).get("cost") and page.cost_inputs)
+
+
+def cost_sheets(page, items=True, inputs=True):
+    """Листы для книги Excel: статьи (только отмеченные галочками) и цены с нормами."""
+    r, c = page.res["cost"], page.cost_inputs
+    sheets = []
+    if items:
+        def picked(pairs):
+            return [(n, v) for n, v in pairs if n not in page.cost_skip]
+        rows = [[n, round(v, 2), round(v / r["conversion"] * 100, 2)]
+                for n, v in picked(r["items"])]
+        rows.append(["ИТОГО передел", round(r["conversion"], 2), 100.0])
+        if c.get("full"):
+            rows += [[n, round(v, 2), ""] for n, v in picked(r["full_items"])]
+            rows.append(["ИТОГО полная себестоимость", round(r["full"], 2), ""])
+        fills = ["yellow" if row[0].startswith("ИТОГО") else None for row in rows]
+        skipped = [n for n, _ in r["items"] + r["full_items"] if n in page.cost_skip]
+        info = [("Передел, руб/т годной", round(r["conversion"], 2)),
+                ("Факт. производительность, кг/ч", round(r["q_f"], 1)),
+                ("Электроэнергия, кВт·ч/т", round(r["kwh_t"], 1)),
+                ("Выпуск, т/мес", round(r["out_month_t"], 1))]
+        if skipped:
+            info.append(("Не выгружены (сняты галочки)", "; ".join(skipped)))
+        sheets.append(("Себестоимость", info, ["Статья", "руб/т годной", "Доля, %"], rows, fills))
+    if inputs:
+        labels = [(key, text) for _, fields in GROUPS for key, text, _ in fields if key in c]
+        rows = [["Расчёт электроэнергии", c["energy_method"]]]
+        rows += [[text, c[key]] for key, text in labels]
+        sheets.append(("Цены и нормы", [], ["Параметр", "Значение"], rows, None))
+    return sheets

@@ -5,7 +5,7 @@ from core.data import DENSITY_MAP, PACKAGES, REFERENCE
 from core.grades import own_names
 from core.util import fmt, g_per_m
 from ui.theme import px
-from ui.widgets import Card, Page, cards_row, label, make_table, fill_table, panel
+from ui.widgets import Card, Page, cards_row, compact_combo, label, make_table, fill_table, panel
 
 
 class MassPage(Page):
@@ -20,6 +20,7 @@ class MassPage(Page):
         g.addWidget(QLabel("Материал"), 0, 0)
         self.mat = QComboBox()
         self.mat.setMaxVisibleItems(20)
+        compact_combo(self.mat)
         self.fill_materials()
         self.mat.setCurrentText("Св-08Г2С")
         g.addWidget(self.mat, 0, 1)

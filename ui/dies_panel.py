@@ -47,8 +47,7 @@ def build_results(page, tabs):
     g = QGridLayout()
     g.setHorizontalSpacing(12)
     page.wet_from = page.add_field(g, 0, "Мокрое волочение с диаметра, мм", "1,6", "route/wetfrom")
-    page.match_pct = page.add_field(g, 0, "Подбор из журнала: номинал ±, %", "1", "route/matchpct",
-                                    col=2)
+    page.match_pct = page.add_field(g, 1, "Подбор из журнала: номинал ±, %", "1", "route/matchpct")
     lay.addLayout(g)
     page.die_table = make_table(HEAD)
     for i, (_, tip) in enumerate(COLUMNS):
@@ -57,13 +56,15 @@ def build_results(page, tabs):
     page.die_table.setWordWrap(True)
     hh = page.die_table.horizontalHeader()
     hh.setSectionResizeMode(MATERIAL_COL, QHeaderView.ResizeMode.Interactive)
-    hh.resizeSection(MATERIAL_COL, px(230))       # длинное название материала — переносом
+    hh.resizeSection(MATERIAL_COL, px(320))       # длинное название материала — переносом
     page.die_table.setMinimumHeight(px(260))
     lay.addWidget(page.die_table, 1)
     bar = QHBoxLayout()
-    b_copy = button("Скопировать список к заказу")
-    b_apply = button("Взять рекомендованный угол в расчёт")
-    b_book = button("Записать партию в журнал…")
+    b_copy = button("Список к заказу")
+    b_copy.setToolTip("Скопировать список волок, которых нет в журнале, — для письма или Excel.")
+    b_apply = button("Угол — в расчёт")
+    b_apply.setToolTip("Взять рекомендованный угол волоки в расчёт усилий и нагрева.")
+    b_book = button("Записать партию…")
     b_book.setToolTip("Добавить тоннаж партии к наработке фильер, подобранных из журнала.")
     bar.addWidget(b_copy)
     bar.addWidget(b_apply)

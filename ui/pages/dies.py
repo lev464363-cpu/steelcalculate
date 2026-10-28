@@ -16,6 +16,7 @@ from ui.widgets import (FieldError, NumField, Page, button, fill_table, label, m
                         tab_box)
 from ui.anim import AnimatedTabWidget
 from ui.pages.tolerance import refill
+from ui.popup import notify
 
 
 class DiesPage(Page):
@@ -176,7 +177,7 @@ class DiesPage(Page):
     def selected(self):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
-            QMessageBox.information(self, "Фильеры", "Сначала выбери фильеру в таблице.")
+            notify(self, "Сначала выбери фильеру в таблице", "info")
             return None
         return self.shown[rows[0].row()]
 

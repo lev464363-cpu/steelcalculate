@@ -8,6 +8,7 @@ from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocume
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from core.util import fmt
+from ui.popup import notify
 
 
 def _e(x):
@@ -169,7 +170,7 @@ def _save_pdf(parent, title, default_name, html_text, what):
     except Exception as e:  # покажем любую ошибку печати, а не упадём молча
         QMessageBox.warning(parent, "Не удалось создать PDF", f"{type(e).__name__}: {e}")
         return
-    QMessageBox.information(parent, "Готово", f"{what.capitalize()} сохранена:\n{path}")
+    notify(parent, f"{what.capitalize()} сохранена", "ok", detail=path)
 
 
 def save_card_pdf(parent, name, mill, group, p, res, note=""):

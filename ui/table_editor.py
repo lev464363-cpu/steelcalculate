@@ -7,6 +7,7 @@ from core.storage import DamagedFile, load_list
 from core.util import InputError, fmt, num
 from ui.theme import px
 from ui.widgets import Page, button, fill_table, label, make_table
+from ui.popup import notify
 
 
 class TableEditorPage(Page):
@@ -117,7 +118,7 @@ class TableEditorPage(Page):
             QMessageBox.warning(self, self.title, f"Не удалось сохранить:\n{e}")
             return
         self.reload()
-        QMessageBox.information(self, self.title, self.saved_text(saved))
+        notify(self, "Сохранено", "ok", detail=self.saved_text(saved))
 
     # ---- правка таблицы ----
     def add_row(self, values=None):
