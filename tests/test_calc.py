@@ -230,6 +230,87 @@ class TestForces(unittest.TestCase):
                 fit_n(*bad)
 
 
+class TestDeformModel(unittest.TestCase):
+    def test_pass_profile(self):
+        from core.deform_model import f_alpha, pass_profile, strain_at
+        self.assertAlmostEqual(f_alpha(1e-4), 1.0, places=6)
+        self.assertGreater(f_alpha(0.5), 1.0)
+        pp = pass_profile(1.25, 6)
+        self.assertAlmostEqual(pp["center"], math.log(1.25), places=12)    # в оси — однородная
+        a = math.radians(6)
+        self.assertAlmostEqual(pp["surface"], math.log(1.25) * math.sqrt(1 - 11 / 12 *
+                               math.sin(a) ** 2) + 2 / math.sqrt(3) * math.tan(a), places=12)
+        self.assertGreater(pp["surface"], pp["center"])
+        self.assertGreater(pp["phi"], 1.0)
+        # больше угол при той же вытяжке — больше неравномерность
+        self.assertGreater(pass_profile(1.25, 10)["phi"], pp["phi"])
+        self.assertLess(strain_at(0.5, 1.25, a), pp["surface"])
+
+    def test_avitzur_close_to_siebel(self):
+        from core.deform_model import route_deformation
+        r = plan_route(BASE)
+        d = route_deformation(r["rows"], r["forces"], dict(BASE, ys=0.85))
+        for x in d["passes"]:
+            self.assertTrue(1.0 < x["sig_d_avitzur"] / x["sig_d_siebel"] < 1.35, x["i"])
+        last = d["passes"][-1]
+        self.assertGreater(last["cum_surface"], last["cum_center"])
+        self.assertGreater(last["sig"][-1], last["sig"][0])       # поверхность прочнее оси
+
+    def test_anneal_resets_profile(self):
+        from core.deform_model import route_deformation
+        p = dict(BASE, limit=70)
+        r = plan_route(p)
+        self.assertGreater(r["anneals"], 0)
+        d = route_deformation(r["rows"], r["forces"], dict(p, ys=0.85))
+        first = next(x for x in d["passes"] if x["anneal"])
+        self.assertAlmostEqual(first["cum_center"], first["center"], places=12)
+
+
+class TestDeformLink(unittest.TestCase):
+    def test_export_and_calibrate(self):
+        import tempfile
+        from core import deform_link as dl
+        from core.deform_model import route_deformation
+        r = plan_route(BASE)
+        with tempfile.TemporaryDirectory() as tmp:
+            files = dl.export_route(tmp, r["rows"][:2], r["forces"][:2], BASE, "g")
+            self.assertIn("pass_01_die.stl", files)
+            with open(os.path.join(tmp, "pass_01_die.stl"), encoding="ascii") as fh:
+                stl = fh.read()
+            self.assertTrue(stl.startswith("solid die") and "facet normal" in stl)
+            with open(os.path.join(tmp, "results_template.csv"), encoding="utf-8-sig") as fh:
+                self.assertIn("Повреждаемость", fh.readline())
+        d = route_deformation(r["rows"], r["forces"], dict(BASE, ys=0.85))["passes"]
+        f1 = r["forces"][0]["P"] / 1000
+        text = ("Проход;Усилие, кН;Деформация за проход: поверхность;Деформация за проход: ось;"
+                "Повреждаемость макс.\n"
+                f"1;{f1 * 1.2:.4f}".replace(".", ",") + f";{d[0]['center'] + 0.5 * (d[0]['surface'] - d[0]['center']):.5f};{d[0]['center']:.5f};0,2\n"
+                "2;;;;0,9\n")
+        res = dl.parse_results(text)
+        self.assertEqual(len(res), 2)
+        cal = dl.calibrate(res, d, r["forces"], damage_crit=0.5)
+        self.assertAlmostEqual(cal["k_force"], 1.2, places=3)
+        self.assertAlmostEqual(cal["k_shear"], 0.5, places=3)
+        self.assertAlmostEqual(cal["delta_limit"], d[1]["delta"], places=9)
+        # поправка усилия проходит в расчёт маршрута
+        self.assertAlmostEqual(plan_route(dict(BASE, kF=1.2))["forces"][0]["P"] / 1000 / f1,
+                               1.2, places=6)
+        with self.assertRaises(InputError):
+            dl.parse_results("Проход;Усилие\n")
+
+    def test_calibration_storage(self):
+        import tempfile
+        from core import deform_link as dl
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "deform.json")
+            dl.save_calibration(dict(group="A", k_force=1.1, k_shear=0.6), path)
+            dl.save_calibration(dict(group="A", k_force=1.3, k_shear=0.7), path)
+            rows = dl.load_calibrations(path)
+            c = dl.active_calibration("A", rows)
+            self.assertEqual((c.k_force, c.k_shear), (1.3, 0.7))
+            self.assertIsNone(dl.active_calibration("B", rows))
+
+
 class TestCoating(unittest.TestCase):
     def test_copper_share(self):
         cu, st, share = copper_share(1.2, 0.0005, 7.85)
@@ -252,7 +333,8 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertAlmostEqual(res["productivity"], g_per_m(7.85, 1.2) * 15 * 3.6, places=6)
         self.assertEqual(res["warnings"], [])
         self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq",
-                                                     "sig_ann", "sig_min", "sig_max"})
+                                                     "sig_ann", "sig_min", "sig_max", "kF",
+                                                     "dlim"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)

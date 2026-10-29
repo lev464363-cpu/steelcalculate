@@ -5,7 +5,7 @@ from core.util import area
 
 
 def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=None, back=0.0,
-                 sig_ann=None):
+                 sig_ann=None, k_force=1.0):
     """Усилие по формуле Зибеля: σвол = σs·[(1 + μ/α)·ln λ + 2α/3] + σq·λ^(−μ/α),
     упрочнение σв(ε) = σв0 + K·ε^n, кривая проходит через σв_ref при ε_ref,
     σs — средний предел текучести в проходе (ys_ratio·σв, по умолчанию 0,85), запас γ = σв после / σвол.
@@ -14,7 +14,8 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
     держит предыдущий барабан, поэтому его мощность меньше на σq·S·v; в нагрев волоки идёт
     только работа деформации и трения σвол − σq.
     sig_ann — прочность после отжига, МПа: с неё начинается кривая упрочнения этапов после
-    отжига (прирост K·εⁿ тот же); без неё — прочность заготовки σв0."""
+    отжига (прирост K·εⁿ тот же); без неё — прочность заготовки σв0.
+    k_force — поправка к напряжению волочения по расчётам DEFORM (core.deform_link), 1 — без."""
     a = math.radians(alpha_deg)
     # sigf — прочность при деформации eps_ref; без eps_ref — в конце этого маршрута
     eps_end = eps_ref if eps_ref else rows[-1]["eps"]
@@ -35,7 +36,7 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
         s_in, s_out = sig(e_in, base), sig(r["eps"], base)
         sigma_s = ys_ratio * (s_in + s_out) / 2
         sq = tension(j)
-        sd = (sigma_s * ((1 + mu / a) * math.log(r["lam"]) + 2 * a / 3)
+        sd = (sigma_s * ((1 + mu / a) * math.log(r["lam"]) + 2 * a / 3) * k_force
               + sq * r["lam"] ** (-mu / a))
         s = area(r["d_out"])
         force = sd * s                         # Н

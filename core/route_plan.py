@@ -2,6 +2,7 @@
 Общий для страницы маршрута, техкарт, сравнения вариантов и печати."""
 import math
 
+from core.dies import DELTA_RISK, delta
 from core.drawing import build_route
 from core.forces import eps_from_reduction, route_forces
 from core.mills import check_mill
@@ -11,11 +12,12 @@ from core.util import fmt, g_per_m
 # Параметры маршрута: всё, что нужно для расчёта и сохраняется в техкарте
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
-              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max")
-OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max")   # могут быть пустыми
+              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim")
+# могут быть пустыми; dlim — предел Δ по DEFORM (пусто — ориентир Wright)
+OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim")
 # значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
 THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0, sig_ann=None,
-                        sig_min=None, sig_max=None)
+                        sig_min=None, sig_max=None, kF=1.0, dlim=None)
 
 
 def plan_route(p, group="", mill=None):
@@ -30,7 +32,7 @@ def plan_route(p, group="", mill=None):
                                                  p.get("lams"), force)
         forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
                               ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
-                              back=p["sq"], sig_ann=p["sig_ann"])
+                              back=p["sq"], sig_ann=p["sig_ann"], k_force=p["kF"])
         return total, lams, rows, anneals, forces
 
     total, lams, rows, anneals, forces = compute()
@@ -79,6 +81,13 @@ def plan_route(p, group="", mill=None):
                         + ("Нужно больше обжатие после последнего отжига или более прочная "
                            "заготовка." if not lo_ok else
                            "Нужен отжиг ближе к финишу или меньшее суммарное обжатие."))
+    # риск разрыва сердцевины («ёлочка»): параметр очага Δ выше предела
+    d_lim = p["dlim"] or DELTA_RISK
+    burst = [r["i"] for r in rows if delta(math.radians(p["alpha"]), r["lam"]) > d_lim + 1e-9]
+    if burst:
+        warnings.append(f"Параметр очага деформации Δ выше {fmt(d_lim, 1)} на проходах "
+                        f"{', '.join(map(str, burst))}: риск разрыва сердцевины. Уменьши угол "
+                        f"волоки или увеличь обжатие на этих проходах (вкладка «Деформация»).")
     # опорная скорость охлаждения: если не задана — охлаждение задано при текущей скорости
     v_ref = p.get("vcool") or p["v"]
     thermal = wire_temperatures(rows, forces, p["rho"], p["cp"], p["t0"], p["tw"], p["cool"],

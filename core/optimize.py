@@ -8,6 +8,7 @@ import math
 
 from core.cost import ENERGY_BY_ROUTE, cost_for_route
 from core.data import GROUPS
+from core.dies import delta
 from core.drawing import distribute, split_stages
 from core.route_plan import plan_route
 from core.util import InputError
@@ -21,7 +22,7 @@ DEFAULT_COST = dict(shifts=2, shift_h=12, days=250, ku_pct=75, yield_pct=97, p_i
                     full=False)
 # скорость на финише этапа — в рабочем диапазоне завода 5–15 м/с
 DEFAULT_LIMITS = dict(gmin=1.4, t_max=180.0, t_wind=100.0, v_min=5.0, v_max=15.0, n_max=24, lam_min=1.10,
-                      lam_min_last=1.05,
+                      lam_min_last=1.05, delta_max=None,
                       ratios=(1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3))
 # Точка калибровки охлаждения: 50 % перегрева снимается при 15 м/с на проволоке 1,2 мм (условно)
 DEFAULT_THERMAL = dict(t0=20.0, tw=25.0, cool=50.0, vcool=15.0, dcool=1.2)
@@ -69,6 +70,10 @@ def optimize(group, rho, dk, d0=5.5, cost=None, thermal=None, limits=None, alpha
             # чистовой (калибрующий) — не меньше lam_min_last
             if max(lams) > base["lmax"] or lams[-1] < lim["lam_min_last"] - 1e-9 or (
                     n > 1 and lams[-2] < lim["lam_min"] - 1e-9):
+                continue
+            # риск разрыва сердцевины: параметр очага Δ на всех проходах — не выше предела
+            if lim["delta_max"] and max(delta(math.radians(alpha), x) for x in lams) \
+                    > lim["delta_max"] + 1e-9:
                 continue
             p = dict(base, n=n, ratio=k, v=1.0)
             try:

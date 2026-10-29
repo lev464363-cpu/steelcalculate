@@ -13,7 +13,7 @@ from core.drawing import manual_fits, redistribute
 from core.forces import fit_n
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
 from core.util import InputError, fmt
-from ui import cost_panel, dies_panel, heat_panel
+from ui import cost_panel, deform_panel, dies_panel, heat_panel
 from ui.chart import RouteChart
 from ui.draft_editor import DraftEditor
 from ui.export import save_workbook, table_sheet
@@ -189,6 +189,7 @@ class RoutePage(Page):
         cost_panel.build_results(self, results)
         heat_panel.build_results(self, results)
         dies_panel.build_results(self, results)
+        deform_panel.build_results(self, results)
 
         bar = QGridLayout()             # 2×2 — не раздвигает окно
         bar.setHorizontalSpacing(8)
@@ -304,7 +305,8 @@ class RoutePage(Page):
         return dict(vcool=vcool, dcool=dcool, d0=d0, dk=dk, ratio=ratio, lmax=lmax, v=v, drum=drum, limit=limit,
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
                     redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
-                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max)
+                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max,
+                    **deform_panel.route_inputs(self))
 
     def recalc(self):
         p = self._inputs()
@@ -355,6 +357,7 @@ class RoutePage(Page):
         self.recalc_cost()
         heat_panel.show(self, res, p, mill)
         dies_panel.show(self, res, p, self.group.currentText())
+        deform_panel.show(self, res, p, self.group.currentText())
         self.chart.set_data(p["d0"], [dict(r, over=r["over"] or f["gamma"] < p["gmin"])
                                       for r, f in zip(rows, forces)])
         self.draft.set_data(rows, forces, res["thermal"], p["lmax"], p["gmin"],
@@ -458,6 +461,7 @@ class RoutePage(Page):
         cost_panel.clear(self)
         heat_panel.clear(self)
         dies_panel.clear(self)
+        deform_panel.clear(self)
         for c in self.c:
             c.set("—")
         self.summary.setText("")
@@ -607,6 +611,8 @@ class RoutePage(Page):
              "heat" in on),
             ("dies", "Волоки", "Углы, поясок, материал, фильеры из журнала.",
              "dies" in on, bool(self.die_plan)),
+            ("deform", "Деформация", "Неравномерность, деформация и прочность поверхности и "
+             "оси, напряжение по Avitzur, Δ.", "deform" in on, bool(self.def_model)),
         ]
         dlg = ExportDialog(self, sections, ROUTE_HEADERS, "passes", self.export_cols)
         if dlg.exec() != ExportDialog.DialogCode.Accepted:
@@ -651,6 +657,8 @@ class RoutePage(Page):
             sheets.append(table_sheet("Нагрев и стан", self.heat_table))
         if "dies" in chosen:
             sheets.append(table_sheet("Волоки", self.die_table))
+        if "deform" in chosen:
+            sheets.append(table_sheet("Деформация", self.def_table))
         path = save_workbook(self, f"маршрут {default_name(self.group.currentText(), p, '')}",
                              sheets)
         if path:
