@@ -433,7 +433,9 @@ def show(page, res, p, group):
                      fmt(x["cum_surface"], 3), fmt(x["cum_center"], 3), fmt(x["sig"][-1], 0),
                      fmt(x["sig"][0], 0), fmt(x["sig_d_avitzur"], 0), fmt(x["sig_d_siebel"], 0),
                      fmt(x["delta"], 2), x["risk"] + ("; отжиг перед проходом" if x["anneal"]
-                                                      else "")))
+                                                      else "")
+                     + ("; фасонный — по экв. кругу" if x["i"] in res.get("shaped", [])
+                        else "")))
         colors.append((T["warn_soft"], T["warn"]) if x["risk"] == "риск" else
                       (T["anneal"], None) if x["risk"] == "внимание" or x["anneal"] else None)
     fill_table(page.def_table, rows, colors)

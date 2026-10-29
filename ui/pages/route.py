@@ -10,6 +10,7 @@ from core.cost import cost_for_route
 from core.mills import find_mill, load_mills
 from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
+from core import profiles as prof
 from core.forces import fit_n
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
 from core.util import InputError, fmt
@@ -71,6 +72,32 @@ class RoutePage(Page):
         note(self.prep)
         self.d0 = field("Исходный диаметр, мм", "5,5", "route/d0")
         self.dk = field("Готовый диаметр, мм", "1,2", "route/dk")
+        # профиль готовой: круг или квадрат / шестигранник (core.profiles)
+        r = g.rowCount()
+        g.addWidget(QLabel("Готовый профиль"), r, 0)
+        self.shape = QComboBox()
+        self.shape.addItems(prof.SHAPES)
+        g.addWidget(self.shape, r, 1)
+        # строки профиля — в общей сетке формы (ровные столбцы), прячутся для круга
+        first = g.rowCount()
+        self.size = field("Размер: сторона / под ключ, мм", "10", "route/size")
+        self.corner_r = field("Радиус скругления углов, мм", "0,5", "route/corner_r")
+        r = g.rowCount()
+        g.addWidget(QLabel("Заготовка"), r, 0)
+        self.way = QComboBox()
+        self.way.addItems(prof.WAYS)
+        g.addWidget(self.way, r, 1)
+        self.lam_shape = field("Вытяжка в фасонных волоках (всего)", "1,15", "route/lam_shape")
+        self.size0 = field("Горячекатаный профиль: размер, мм", "11", "route/size0")
+        self.n_shape = field("Фасонных проходов", "1", "route/n_shape")
+        self.prof_note = label("", "note", True)
+        note(self.prof_note)
+        self.prof_rows = [g.itemAt(k).widget() for k in range(g.count())
+                          if g.getItemPosition(k)[0] >= first]
+        self.combos["route/shape"] = self.shape
+        self.combos["route/way"] = self.way
+        self.shape.currentIndexChanged.connect(self._profile_mode)
+        self.way.currentIndexChanged.connect(self._profile_mode)
         self.n = field("Число проходов", "14", "route/n")
         self.ratio = field("Перевес обжатия в начале маршрута", "1,15", "route/ratio")
         self.ratio.setToolTip("Во сколько раз вытяжка на первом проходе больше, чем на последнем.")
@@ -226,6 +253,7 @@ class RoutePage(Page):
         self.mill.currentTextChanged.connect(self.safe_recalc)
         self.reload_mills()
         self.apply_group()
+        self._profile_mode()
 
     def apply_group(self, *args):
         name = self.group.currentText()
@@ -243,11 +271,64 @@ class RoutePage(Page):
         self.prep.setText(" ".join(x for x in (g.get("family", "") + ".", g.get("prep", "")) if x))
         self.hsrc.setText("Прочность: " + h["src"] + f" Лучше подставить прочность своей катанки и проволоки после известного обжатия.")
 
+    def _profile_mode(self, *args):
+        """Поля профиля видны для квадрата и шестигранника; готовый (и при калибровке
+        горячекатаного профиля — исходный) диаметр считается по площади профиля."""
+        shaped = self.shape.currentText() != prof.ROUND
+        from_profile = self.way.currentText() == prof.FROM_PROFILE
+        for w in self.prof_rows:
+            w.setVisible(shaped)
+        self.dk.setEnabled(not shaped)
+        self.d0.setEnabled(not (shaped and from_profile))
+        self.lam_shape.setEnabled(shaped and not from_profile)
+        self.size0.setEnabled(shaped and from_profile)
+        self.prof_note.setText(
+            "Маршрут считается по кругу той же площади; фасонные проходы помечены в таблице. "
+            + ("Все проходы — фасонные: число проходов = числу фасонных."
+               if from_profile else
+               "Круглые проходы до Ø заготовки под фасонную волоку, затем фасонные.")
+            if shaped else "")
+        self.draft.setEnabled(not shaped)        # ручная раскладка — только для круга
+        self.safe_recalc()
+
+    def _profile_inputs(self):
+        """Параметры профиля для core.profiles; для круга — только shape."""
+        shape = self.shape.currentText()
+        if shape == prof.ROUND:
+            return dict(shape=shape)
+        size, r = self.size.value(), self.corner_r.value(allow_zero=True)
+        try:
+            prof.check(shape, size, r)
+        except InputError as e:
+            raise FieldError(self.corner_r if size > 0 else self.size, str(e))
+        n_sh = self.n_shape.value()
+        if n_sh != int(n_sh):
+            raise FieldError(self.n_shape, "Число фасонных проходов — целое.")
+        out = dict(shape=shape, size=size, corner_r=r, way=self.way.currentText(),
+                   n_shape=int(n_sh))
+        if out["way"] == prof.FROM_PROFILE:
+            out["size0"] = self.size0.value()
+            if out["size0"] <= size:
+                raise FieldError(self.size0, "Горячекатаный профиль должен быть больше готового.")
+        else:
+            out["lam_shape"] = self.lam_shape.value()
+            if out["lam_shape"] <= 1:
+                raise FieldError(self.lam_shape, "Вытяжка в фасонных волоках — больше 1.")
+        return out
+
     def _inputs(self):
-        d0 = self.d0.value()
-        dk = self.dk.value()
+        pr = self._profile_inputs()
+        if pr["shape"] != prof.ROUND:
+            # готовый диаметр — эквивалентный круг профиля; исходный — при калибровке профиля
+            dk = prof.eq_diameter(pr["shape"], pr["size"], pr["corner_r"])
+            d0 = (prof.eq_diameter(pr["shape"], pr["size0"], pr["corner_r"])
+                  if pr["way"] == prof.FROM_PROFILE else self.d0.value())
+        else:
+            d0 = self.d0.value()
+            dk = self.dk.value()
         if dk >= d0:
-            raise FieldError(self.dk, "Готовый диаметр должен быть меньше исходного.")
+            raise FieldError(self.dk if pr["shape"] == prof.ROUND else self.size,
+                             "Готовый размер должен быть меньше исходного.")
         ratio = self.ratio.value()
         if ratio < 1:
             raise FieldError(self.ratio, "Перевес обжатия — не меньше 1 "
@@ -306,7 +387,7 @@ class RoutePage(Page):
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
                     redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
                     sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max,
-                    **deform_panel.route_inputs(self))
+                    **deform_panel.route_inputs(self), **pr)
 
     def recalc(self):
         p = self._inputs()
@@ -320,6 +401,13 @@ class RoutePage(Page):
         p["lams"] = self._manual_lams(p)
         mill = self.mill_profile()
         res = plan_route(p, self.group.currentText(), mill)
+        p["d0"], p["dk"] = res["d0"], res["dk"]        # для профиля — эквивалентные круги
+        if p["shape"] != prof.ROUND:
+            for f, v in ((self.dk, res["dk"]), (self.d0, res["d0"])):
+                if not f.isEnabled():               # расчётное значение — без пересчёта
+                    f.blockSignals(True)
+                    f.setText(fmt(v, 3))
+                    f.blockSignals(False)
         total, lams, rows, anneals, forces = (res["total"], res["lams"], res["rows"],
                                               res["anneals"], res["forces"])
         self.rows, self.forces, self.p, self.n_used, self.res = rows, forces, p, n, res
@@ -330,7 +418,16 @@ class RoutePage(Page):
         self.c[3].set(fmt(gamma_min, 2))
         self.c[4].set(fmt(power, 1))
         self.c[5].set(fmt(gpm * p["v"] * 3.6, 0))
+        shape_info = ""
+        if p["shape"] != prof.ROUND:
+            s = prof.area(p["shape"], p["size"], p["corner_r"])
+            shape_info = (f"Готовый профиль: {prof.label(p['shape'], p['size'])}, S = {fmt(s, 2)} мм², "
+                          f"экв. Ø {fmt(res['dk'], 3)}, по углам Ø "
+                          f"{fmt(prof.across_corners(p['shape'], p['size'], p['corner_r']), 3)}"
+                          + (f"; круг перед фасонной волокой Ø {fmt(res['d_round'], 3)}"
+                             if res["d_round"] else "") + ".  ")
         self.summary.setText(
+            shape_info +
             f"Средняя вытяжка {fmt(total ** (1 / n))}  ·  первый проход {fmt(lams[0])}, "
             f"последний {fmt(lams[-1])}  ·  истинная деформация {fmt(math.log(total))}  ·  "
             f"масса 1 м готовой {fmt(gpm, 2)} г. Мощность — на самой проволоке, без потерь "
@@ -516,7 +613,8 @@ class RoutePage(Page):
         if not self.rows:
             notify(self, "Сначала получи корректный маршрут", "warn")
             return None
-        return {k: self.p[k] for k in PARAM_KEYS}
+        # параметры профиля есть не у каждого способа — отсутствующие пустые
+        return {k: self.p.get(k) for k in PARAM_KEYS}
 
     def save_card(self):
         p = self.current_params()
@@ -570,7 +668,12 @@ class RoutePage(Page):
         cost_panel.load(self, card.get("cost"))
         self.mill.setEditText(card.get("mill", ""))
         lams = card["params"].get("lams")
-        self.manual = dict(lams=list(lams), pinned=set()) if lams else None
+        params = card["params"]
+        self.shape.setCurrentText(params.get("shape") or prof.ROUND)
+        if params.get("way"):
+            self.way.setCurrentText(params["way"])
+        shaped = (params.get("shape") or prof.ROUND) != prof.ROUND
+        self.manual = dict(lams=list(lams), pinned=set()) if lams and not shaped else None
         self._loading = True
         names = {"d0": self.d0, "dk": self.dk, "n": self.n, "ratio": self.ratio, "v": self.v,
                  "drum": self.drum, "alpha": self.alpha, "mu": self.mu, "limit": self.limit,
@@ -578,7 +681,9 @@ class RoutePage(Page):
                  "sigf": self.sigf, "nh": self.nh, "redref": self.redref, "t0": self.t0,
                  "tw": self.tw, "cool": self.cool, "cp": self.cp, "vcool": self.vcool,
                  "dcool": self.dcool, "ys": self.ys, "sq": self.sq,
-                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max}
+                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max,
+                 "size": self.size, "corner_r": self.corner_r, "lam_shape": self.lam_shape,
+                 "size0": self.size0, "n_shape": self.n_shape}
         for key, field in names.items():
             if key not in card["params"]:       # старые техкарты: оставляем текущее значение
                 continue

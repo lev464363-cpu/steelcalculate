@@ -230,6 +230,57 @@ class TestForces(unittest.TestCase):
                 fit_n(*bad)
 
 
+class TestProfiles(unittest.TestCase):
+    def test_geometry(self):
+        from core import profiles as pr
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10), 100, places=12)
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10, 1), 100 - (4 - math.pi), places=12)
+        self.assertAlmostEqual(pr.area(pr.HEX, 10), math.sqrt(3) / 2 * 100, places=12)
+        self.assertAlmostEqual(pr.across_corners(pr.SQUARE, 10), 10 * math.sqrt(2), places=12)
+        self.assertAlmostEqual(pr.across_corners(pr.HEX, 10), 20 / math.sqrt(3), places=12)
+        # радиус r = a/2 — квадрат становится кругом диаметра a
+        self.assertAlmostEqual(pr.across_corners(pr.SQUARE, 10, 4.9999999), 10, places=5)
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10, 5), math.pi * 25, places=9)
+        for shape in (pr.SQUARE, pr.HEX):
+            s = pr.area(shape, 7.3, 0.6)
+            self.assertAlmostEqual(pr.size_from_area(shape, s, 0.6), 7.3, places=9)
+
+    def test_route_from_round(self):
+        from core import profiles as pr
+        p = dict(BASE, dk=None, n=3, shape=pr.SQUARE, size=4.0, corner_r=0.4, way=pr.FROM_ROUND,
+                 lam_shape=1.15, n_shape=1, limit=96)
+        r = plan_route(p)
+        s = pr.area(pr.SQUARE, 4.0, 0.4)
+        self.assertAlmostEqual(r["dk"], math.sqrt(4 * s / math.pi), places=9)
+        self.assertAlmostEqual(r["rows"][-1]["d_out"], r["dk"], places=9)
+        self.assertAlmostEqual(r["rows"][-1]["lam"], 1.15, places=9)          # фасонный проход
+        self.assertAlmostEqual(r["d_round"], math.sqrt(4 * 1.15 * s / math.pi), places=9)
+        self.assertEqual(r["shaped"], [3])
+        self.assertIn("фасонная волока", r["rows"][-1]["notes"])
+        self.assertAlmostEqual(r["gpm"], 7.85 * s, places=9)                   # масса — по площади
+        # число проходов подбирается и для профиля
+        n = suggest_n_full(dict(p, n=1))
+        self.assertTrue(plan_route(dict(p, n=n))["gamma_min"] >= p["gmin"])
+
+    def test_card_with_empty_profile_fields(self):
+        # техкарта: все параметры, профиль не задан (старые карты и круглый маршрут)
+        params = {k: BASE.get(k) for k in PARAM_KEYS}
+        self.assertEqual(plan_route(params)["n"], BASE["n"])
+        self.assertEqual(plan_route(params)["shaped"], [])
+
+    def test_route_from_profile(self):
+        from core import profiles as pr
+        p = dict(BASE, n=2, shape=pr.HEX, size=10.0, corner_r=0.5, way=pr.FROM_PROFILE,
+                 size0=11.0, n_shape=2, sig0=500, sigf=900, redref=60)
+        r = plan_route(p)
+        lam = (pr.area(pr.HEX, 11, 0.5) / pr.area(pr.HEX, 10, 0.5)) ** 0.5
+        self.assertTrue(all(abs(x - lam) < 1e-9 for x in r["lams"]))
+        self.assertEqual(r["shaped"], [1, 2])
+        self.assertTrue(r["rows"][-1]["profile"].startswith("шестигранник 10"))
+        with self.assertRaises(InputError):
+            plan_route(dict(p, n=3))                  # все проходы фасонные
+
+
 class TestDeformModel(unittest.TestCase):
     def test_pass_profile(self):
         from core.deform_model import f_alpha, pass_profile, strain_at
@@ -334,7 +385,8 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertEqual(res["warnings"], [])
         self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq",
                                                      "sig_ann", "sig_min", "sig_max", "kF",
-                                                     "dlim"})
+                                                     "dlim", "shape", "size", "corner_r", "way",
+                                                     "lam_shape", "size0", "n_shape"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)
@@ -394,6 +446,12 @@ class TestPlanAndCards(unittest.TestCase):
 
 
 class TestTolerance(unittest.TestCase):
+    def test_profile_standards(self):
+        self.assertEqual(tolerance("ГОСТ 8559-75 (квадрат), h11", 10), (0.0, -0.090))
+        self.assertEqual(tolerance("ГОСТ 8560-78 (шестигранник), h12", 22), (0.0, -0.210))
+        with self.assertRaises(InputError):
+            tolerance("ГОСТ 8559-75 (квадрат), h11", 120)
+
     def test_custom_ntd(self):
         import tempfile
         from core import tolerance as tl

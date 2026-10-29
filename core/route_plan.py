@@ -3,7 +3,9 @@
 import math
 
 from core.dies import DELTA_RISK, delta
+from core import profiles as prof
 from core.drawing import build_route
+from core.profiles import ROUND
 from core.forces import eps_from_reduction, route_forces
 from core.mills import check_mill
 from core.thermal import T_AGING, T_WINDING, wire_temperatures
@@ -12,12 +14,15 @@ from core.util import fmt, g_per_m
 # Параметры маршрута: всё, что нужно для расчёта и сохраняется в техкарте
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
-              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim")
+              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim",
+              "shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape")
+# профиль готовой (core.profiles): круг или квадрат / шестигранник с параметрами
+PROFILE_KEYS = ("shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape")
 # могут быть пустыми; dlim — предел Δ по DEFORM (пусто — ориентир Wright)
-OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim")
+OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim") + PROFILE_KEYS[1:]
 # значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
 THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0, sig_ann=None,
-                        sig_min=None, sig_max=None, kF=1.0, dlim=None)
+                        sig_min=None, sig_max=None, kF=1.0, dlim=None, shape=ROUND)
 
 
 def plan_route(p, group="", mill=None):
@@ -25,6 +30,14 @@ def plan_route(p, group="", mill=None):
     p = dict(THERMAL_DEFAULTS, **{k: v for k, v in p.items()
                                   if v is not None or k in OPTIONAL_KEYS})
     n = int(p["n"])
+    shaped, d_round = [], None
+    if p["shape"] != ROUND:
+        # профиль: маршрут — по эквивалентному кругу, вытяжки задаёт core.profiles
+        prof.check(p["shape"], p["size"], p.get("corner_r") or 0.0)
+        p["dk"] = prof.eq_diameter(p["shape"], p["size"], p.get("corner_r") or 0.0)
+        if p.get("way") == prof.FROM_PROFILE:
+            p["d0"] = prof.eq_diameter(p["shape"], p["size0"], p.get("corner_r") or 0.0)
+        p["lams"], shaped, d_round = prof.shaped_lams(p, n)
 
     def compute(force=None):
         total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
@@ -52,6 +65,14 @@ def plan_route(p, group="", mill=None):
                 best = (key, cand)
         if best is not None:
             total, lams, rows, anneals, forces = best[1]
+    if shaped:
+        r_c = p.get("corner_r") or 0.0
+        for r in rows:
+            if r["i"] in shaped:
+                a_i = prof.size_from_area(p["shape"], math.pi * r["d_out"] ** 2 / 4, r_c)
+                r["profile"] = prof.label(p["shape"], round(a_i, 3))
+                note = f"фасонная волока: {r['profile']}"
+                r["notes"] = f"{r['notes']}; {note}" if r["notes"] else note
     gpm = g_per_m(p["rho"], p["dk"])
     weak = [r["i"] for r, f in zip(rows, forces) if f["gamma"] < p["gmin"]]
     over = [r["i"] for r in rows if r["over"]]
@@ -107,7 +128,8 @@ def plan_route(p, group="", mill=None):
                 thermal=thermal, t_max=max(t["t_out"] for t in thermal),
                 t_wind=thermal[-1]["t_drum"], mill=mill_res,
                 gpm=gpm, gamma_min=min(f["gamma"] for f in forces),
-                sig_end=sig_end, strength_ok=lo_ok and hi_ok,
+                sig_end=sig_end, strength_ok=lo_ok and hi_ok, shaped=shaped, d_round=d_round,
+                dk=p["dk"], d0=p["d0"],
                 power=sum(f["power"] for f in forces), productivity=gpm * p["v"] * 3.6,
                 eps=math.log(total), weak=weak, over=over, warnings=warnings)
 
@@ -119,13 +141,17 @@ def suggest_n_full(p, group="", mill=None):
     from core.drawing import distribute
     from core.util import InputError
     fallback = None
+    shaped = p.get("shape", ROUND) != ROUND      # профиль: вытяжки строит core.profiles
     for n in range(1, 61):
-        lams = distribute((p["d0"] / p["dk"]) ** 2, n, p["ratio"])
-        if max(lams) > p["lmax"] or min(lams) <= 1:
-            continue
+        if not shaped:
+            lams = distribute((p["d0"] / p["dk"]) ** 2, n, p["ratio"])
+            if max(lams) > p["lmax"] or min(lams) <= 1:
+                continue
         try:
             res = plan_route(dict(p, n=n), group, mill)
         except InputError:
+            continue
+        if shaped and max(res["lams"]) > p["lmax"] + 1e-9:
             continue
         if res["gamma_min"] >= p["gmin"]:
             if res["strength_ok"]:
