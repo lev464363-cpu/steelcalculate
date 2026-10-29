@@ -386,7 +386,7 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq",
                                                      "sig_ann", "sig_min", "sig_max", "kF",
                                                      "dlim", "shape", "size", "corner_r", "way",
-                                                     "lam_shape", "size0", "n_shape"})
+                                                     "lam_shape", "size0", "n_shape", "blocks"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)
@@ -579,6 +579,70 @@ class TestCost(unittest.TestCase):
         old = dict(cost_breakdown(base)["full_items"])                       # старые техкарты
         self.assertAlmostEqual(old["Катанка (заготовка)"], 80000 / 0.98, places=6)
         self.assertIn(("Моток", 80.0), PACKAGES)
+
+
+class TestBlankAndThreading(unittest.TestCase):
+    def test_threading_lowers_output(self):
+        from core.cost import BLANK_COIL, run_share
+        base = dict(COST, energy_method=ENERGY_BY_PASSPORT)
+        r0 = cost_breakdown(base)
+        c = dict(base, blank=BLANK_COIL, coil_kg=1000, t_thread=10, t_change=5)
+        r1 = cost_breakdown(c)
+        q_t = r0["q_t"]
+        t_run = 1000 / q_t * 60
+        share = t_run / (t_run + 10 + 5)                # одна заправка на прогон
+        self.assertAlmostEqual(run_share(c, q_t)[0], share, places=12)
+        self.assertAlmostEqual(r1["q_f"], r0["q_f"] * share, places=9)
+        self.assertGreater(r1["conversion"], r0["conversion"])
+        # число проходов в прогоне на заправку не влияет
+        self.assertAlmostEqual(cost_breakdown(dict(c, n_passes=16))["q_f"], r1["q_f"], places=9)
+
+    def test_route_split_by_blocks(self):
+        from core.drawing import split_runs
+        r = plan_route(dict(BASE, blocks=6))           # 14 проходов на стане из 6 блоков
+        runs = split_runs(r["rows"])
+        self.assertEqual([len(x) for x in runs], [6, 6, 2])
+        self.assertEqual(r["runs"], 3)
+        for run in runs:                                # последний проход прогона — на финише
+            self.assertAlmostEqual(run[-1]["v"], BASE["v"], places=9)
+        # между прогонами проволока остывает
+        k = len(runs[0])
+        self.assertAlmostEqual(r["thermal"][k]["t_in"], 20.0, places=9)
+        one = plan_route(BASE)
+        self.assertEqual(one["runs"], 1)
+        # профиль стана задаёт блоки сам
+        from core.mills import DRIVE_INDIVIDUAL
+        mill = dict(name="M", drive=DRIVE_INDIVIDUAL, drums=8, drum_d=560, v_max=20,
+                    p_motor=None, eta=85, kin=None)
+        m = plan_route(BASE, "", mill)
+        self.assertEqual(m["runs"], 2)
+        self.assertTrue(m["mill"]["fits"])
+
+    def test_threading_per_run(self):
+        from core.cost import BLANK_COIL
+        p = dict(BASE, blocks=6)
+        r = plan_route(p)
+        c = dict(COST, blank=BLANK_COIL, coil_kg=800, t_thread=10, t_change=5)
+        cr = cost_for_route(c, p, r)
+        self.assertAlmostEqual(cr["t_aux"], (10 + 5) * 3, places=9)      # 3 прогона
+        self.assertLess(cr["run_share"], 1.0)
+        one = cost_for_route(c, BASE, plan_route(BASE))
+        self.assertGreater(cr["conversion"], one["conversion"])        # больше заправок — дороже
+
+    def test_bar_pointing_and_length(self):
+        from core.cost import BLANK_BAR, bar_length, point_loss, unit_mass
+        c = dict(COST, blank=BLANK_BAR, bar_m=6.0, point_mm=150, repoint_mm=30, t_thread=0,
+                 t_change=0)
+        self.assertAlmostEqual(unit_mass(c, 7.85, 10.0), g_per_m(7.85, 10.0) * 6 / 1000)
+        self.assertAlmostEqual(bar_length(c, 10.0, 5.0), 24.0)
+        self.assertAlmostEqual(point_loss(c, 10.0, [10.0]), 0.15 / 6)
+        # второй прогон: пруток уже 24 м, острим ещё 30 мм нового металла
+        self.assertAlmostEqual(point_loss(c, 10.0, [10.0, 5.0]), 0.15 / 6 + 0.03 / 24)
+        r = plan_route(BASE)
+        cr = cost_for_route(c, BASE, r)
+        plain = cost_for_route(dict(COST), BASE, r)
+        self.assertAlmostEqual(cr["point_loss"], 0.15 / 6, places=12)
+        self.assertAlmostEqual(cr["conversion"], plain["conversion"] / (1 - 0.15 / 6), places=6)
 
 
 class TestGrades(unittest.TestCase):

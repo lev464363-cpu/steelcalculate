@@ -4,8 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel,
                                QMessageBox, QVBoxLayout, QWidget)
 
-from core.cost import (COPPER_KEYS, COST_NUM_KEYS, ENERGY_BY_ROUTE, ENERGY_METHODS, FORMULAS,
-                       FULL_KEYS)
+from core.cost import (BAR_KEYS, BLANK_BAR, BLANKS, COIL_KEYS, COPPER_KEYS, COST_NUM_KEYS,
+                       ENERGY_BY_ROUTE, ENERGY_METHODS, FORMULAS, FULL_KEYS)
 from core.data import PACKAGES
 from core.util import fmt
 from ui.theme import px
@@ -15,11 +15,12 @@ from ui.popup import notify
 
 ZERO_OK = {"idle_pct", "tax_pct", "overhead_pct", "die_price", "lube_kg_t", "lube_price",
            "other_t", "anneal_cost_t", "repair_pct", "scrap_price", "pack_price", "cu_loss_pct",
-           "mill_price", "rod_vat_pct"}
+           "mill_price", "rod_vat_pct", "t_thread", "t_change", "point_mm", "repoint_mm"}
 PERCENT_100 = {"ku_pct", "yield_pct", "load_pct", "eta_pct", "idle_pct", "rod_vat_pct"}
 OWN_PACK = "своя масса нетто"
 # цвет раздела ввода; тем же цветом помечены статьи в таблице результатов
-SECTION_COLORS = {"Режим работы": "#8C96A0", "Электроэнергия": "#F2B705",
+SECTION_COLORS = {"Режим работы": "#8C96A0", "Заготовка и заправка": "#7BC67E",
+                  "Электроэнергия": "#F2B705",
                   "Персонал": "#5B9BFF", "Инструмент и материалы": "#14C4A8",
                   "Амортизация и ремонт стана": "#B07CFF", "Омеднение": "#E07A3F",
                   "Полная себестоимость": "#FF5C8A"}
@@ -37,6 +38,12 @@ GROUPS = [
                       ("days", "Рабочих дней в году", "250"),
                       ("ku_pct", "Коэффициент использования стана, %", "75"),
                       ("yield_pct", "Выход годного, %", "97")]),
+    ("Заготовка и заправка", [("coil_kg", "Масса бунта (мотка), кг", "1000"),
+                              ("bar_m", "Длина прутка-заготовки, м", "6"),
+                              ("point_mm", "Первое заострение прутка, мм", "150"),
+                              ("repoint_mm", "Повторное заострение (новый металл), мм", "30"),
+                              ("t_thread", "Заправка стана (на прогон), мин", "10"),
+                              ("t_change", "Смена бунта / прутка, мин", "5")]),
     ("Электроэнергия", [("p_inst", "Установленная мощность (стан, размотчик, намотчик), кВт",
                          "632"),
                         ("load_pct", "Коэффициент загрузки по мощности, %", "60"),
@@ -90,12 +97,15 @@ def build_inputs(page, tabs):
     compact_combo(page.cost_method, 20)
     page.cost_copper = QCheckBox("Учитывать медь на омеднение")
     page.cost_full = QCheckBox("Добавить катанку, отходы и упаковку")
+    page.cost_blank = QComboBox()
+    page.cost_blank.addItems(BLANKS)
     for gi, (title, fields) in enumerate(GROUPS):
         sec = Collapsible(title, SECTION_COLORS[title], open_=gi == 0)
         page.cost_sections[title] = sec
         g = sec.grid
         extra = {"Электроэнергия": page.cost_method, "Омеднение": page.cost_copper,
-                 "Полная себестоимость": page.cost_full}.get(title)
+                 "Полная себестоимость": page.cost_full,
+                 "Заготовка и заправка": page.cost_blank}.get(title)
         if extra is not None:
             g.addWidget(extra, 0, 0, 1, 2)
         for key, text, default in fields:
@@ -122,8 +132,16 @@ def build_inputs(page, tabs):
                               "одну единицу (катушку, кассету, бочку, моток).", "note", True),
                         g.rowCount(), 0, 1, 2)
         if title == "Режим работы":
-            g.addWidget(label("Kи — доля смены, когда стан реально тянет: без обрывов, заправки, "
-                              "смены катушек и переналадок.", "note", True), g.rowCount(), 0, 1, 2)
+            g.addWidget(label("Kи — доля смены без прочих простоев: обрывов, переналадок, ожидания. "
+                              "Заправка стана и смена бунтов считаются отдельно — раздел "
+                              "«Заготовка и заправка».", "note", True), g.rowCount(), 0, 1, 2)
+        if title == "Заготовка и заправка":
+            g.addWidget(label("Стан заправляется один раз на прогон — до стольких проходов, сколько "
+                              "у него блоков (вкладка «Стан»); этап длиннее или после отжига — "
+                              "новый прогон со своей заправкой и сменой бунта. Пруток острится "
+                              "перед каждым прогоном, отрезается один раз после последнего "
+                              "прохода: первое заострение — от заготовки, следующие — ещё "
+                              "20–40 мм нового металла.", "note", True), g.rowCount(), 0, 1, 2)
         blay.addWidget(sec)
     blay.addStretch()
     tabs.addTab(host, "Экономика")
@@ -132,6 +150,9 @@ def build_inputs(page, tabs):
     page.checks["cost/full"] = page.cost_full
     page.checks["cost/on"] = page.cost_on
     page.combos["cost/pack"] = page.cost_pack
+    page.combos["cost/blank"] = page.cost_blank
+    page.cost_blank.currentIndexChanged.connect(page.safe_recalc)
+    page.cost_blank.currentIndexChanged.connect(lambda *_: update_summaries(page))
     for w in (page.cost_copper, page.cost_full, page.cost_on):
         w.toggled.connect(page.safe_recalc)
     page.cost_method.currentIndexChanged.connect(page.safe_recalc)
@@ -152,7 +173,12 @@ def update_summaries(page):
     except ValueError:
         mill = v("mill_price")
     by_route = page.cost_method.currentText() == ENERGY_BY_ROUTE
+    bar = page.cost_blank.currentText() == BLANK_BAR
     text = {
+        "Заготовка и заправка": (f"пруток {v('bar_m')} м, заострение {v('point_mm')} + "
+                                 f"{v('repoint_mm')} мм" if bar else f"бунт {v('coil_kg')} кг")
+                                + f" · заправка {v('t_thread')} мин/прогон · смена "
+                                  f"{v('t_change')} мин",
         "Режим работы": f"{v('shifts')} см. × {v('shift_h')} ч, {v('days')} дн./год · "
                         f"Kи {v('ku_pct')} % · выход годного {v('yield_pct')} %",
         "Электроэнергия": f"{v('p_inst')} кВт · {v('tariff')} руб/кВт·ч · "
@@ -204,7 +230,7 @@ def build_results(page, tabs):
     cg = QGridLayout()
     cg.setSpacing(12)
     for i, c in enumerate(page.cost_cards):
-        cg.addWidget(c, i // 3, i % 3)
+        cg.addWidget(c, i // 2, i % 2)          # 2 в ряд — не шире окна
     lay.addLayout(cg)
     page.cost_msg = label("", "error", True)
     lay.addWidget(page.cost_msg)
@@ -241,13 +267,18 @@ def enable_fields(page):
         page.cost_f[k].setEnabled(page.cost_copper.isChecked())
     for k in FULL_KEYS:
         page.cost_f[k].setEnabled(page.cost_full.isChecked())
+    bar = page.cost_blank.currentText() == BLANK_BAR
+    for k in COIL_KEYS:
+        page.cost_f[k].setEnabled(not bar)
+    for k in BAR_KEYS:
+        page.cost_f[k].setEnabled(bar)
 
 
 def read_inputs(page):
     """Исходные данные себестоимости из полей (то, что сохраняется в техкарте)."""
     c = dict(energy_method=page.cost_method.currentText(), copper=page.cost_copper.isChecked(),
-             full=page.cost_full.isChecked())
-    keys = list(COST_NUM_KEYS)
+             full=page.cost_full.isChecked(), blank=page.cost_blank.currentText())
+    keys = list(COST_NUM_KEYS) + list(BAR_KEYS if c["blank"] == BLANK_BAR else COIL_KEYS)
     if c["copper"]:
         keys += COPPER_KEYS
     if c["full"]:
@@ -275,7 +306,13 @@ def show(page, r, c):
         f"Теоретическая производительность {fmt(r['q_t'], 0)} кг/ч; рабочая мощность "
         f"{fmt(r['p_work'], 0)} кВт из {fmt(c['p_inst'], 0)} по паспорту; годовой выпуск "
         f"{fmt(r['out_year_t'], 0)} т." + (f" Медь {fmt(r['cu_kg_t'], 2)} кг/т." if c["copper"]
-                                           else ""))
+                                           else "")
+        + (f" Заправки и смены — {fmt(r['t_aux'], 0)} мин на {c['blank'].split(' ')[0]} "
+           f"за весь маршрут: стан "
+           f"тянет {fmt(r['run_share'] * 100, 1 if r['run_share'] < 0.1 else 0)} % рабочего времени."
+           if r.get("t_aux") else "")
+        + (f" Отход на заострение прутка — {fmt(r['point_loss'] * 100, 2)} %."
+           if r.get("point_loss") else ""))
     rows = [(n, fmt(v, 0), fmt(v / r["conversion"] * 100, 1)) for n, v in r["items"]]
     rows.append(("ИТОГО передел", fmt(r["conversion"], 0), "100,0"))
     if c["full"]:
@@ -334,6 +371,8 @@ def load(page, cost):
     if page.cost_method.findText(cost.get("energy_method", "")) >= 0:
         page.cost_method.setCurrentText(cost["energy_method"])
     page.cost_copper.setChecked(bool(cost.get("copper")))
+    if cost.get("blank") in BLANKS:
+        page.cost_blank.setCurrentText(cost["blank"])
     page.cost_full.setChecked(bool(cost.get("full")))
     for key, field in page.cost_f.items():
         if key in cost and cost[key] is not None:
@@ -377,3 +416,14 @@ def cost_sheets(page, items=True, inputs=True):
         rows += [[text, c[key]] for key, text in labels]
         sheets.append(("Цены и нормы", [], ["Параметр", "Значение"], rows, None))
     return sheets
+
+
+def blank_info(page):
+    """Заготовка для таблицы проходов (даже при выключенной себестоимости): (вид, кг бунта или
+    м прутка) или None, если в поле ошибка."""
+    bar = page.cost_blank.currentText() == BLANK_BAR
+    try:
+        val = page.cost_f["bar_m" if bar else "coil_kg"].value()
+    except FieldError:
+        return None
+    return page.cost_blank.currentText(), val

@@ -6,14 +6,14 @@ from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QInputDialog
 
 from core.data import GROUPS
 from core.cards import default_name, load_cards, save_cards, upsert_card
-from core.cost import cost_for_route
+from core.cost import BLANK_BAR, cost_for_route
 from core.mills import find_mill, load_mills
 from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
 from core import profiles as prof
 from core.forces import fit_n
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
-from core.util import InputError, fmt
+from core.util import InputError, fmt, g_per_m
 from ui import cost_panel, deform_panel, dies_panel, heat_panel
 from ui.chart import RouteChart
 from ui.draft_editor import DraftEditor
@@ -31,7 +31,7 @@ ROUTE_HEADERS = ["№", "Диаметр на входе, мм", "Диаметр 
                  "Накопл. обжатие*, %", "Накопл. деформация*",
                  "Прочность после прохода, МПа", "Напряжение волочения, МПа", "Запас прочности",
                  "Усилие волочения, кН", "Мощность, кВт", "Скорость проволоки, м/с",
-                 "Обороты барабана, об/мин", "Примечание"]
+                 "Обороты барабана, об/мин", "Длина бунта / прутка, м", "Примечание"]
 
 
 class RoutePage(Page):
@@ -118,6 +118,10 @@ class RoutePage(Page):
         self.mills = []
         self.v = field("Скорость волочильного стана на финише, м/с", "15", "route/v")
         self.drum = field("Диаметр барабана, мм", "", "route/drum")
+        self.blocks = field("Блоков на стане", "", "route/blocks")
+        self.blocks.setPlaceholderText("из профиля стана")
+        self.blocks.setToolTip("Сколько проходов идёт за одну заправку. Если выбран профиль стана — "
+                               "берётся число его барабанов; пусто — весь этап за одну заправку.")
         self.drum.setPlaceholderText("необязательно")
         self.alpha = field("Полуугол волоки, °", "6", "route/alpha")
         self.mu = field("Коэффициент трения", "0,05", "route/mu")
@@ -338,6 +342,9 @@ class RoutePage(Page):
             raise FieldError(self.lmax, "Максимальная вытяжка за проход должна быть больше 1.")
         v = self.v.value()
         drum = self.drum.value(optional=True)
+        blocks = self.blocks.value(optional=True)
+        if blocks is not None and (blocks != int(blocks) or blocks < 1):
+            raise FieldError(self.blocks, "Блоков на стане — целое число от 1.")
         limit = self.limit.value()
         if limit >= 100:
             raise FieldError(self.limit, "Предел обжатия должен быть меньше 100 %.")
@@ -387,6 +394,7 @@ class RoutePage(Page):
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
                     redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
                     sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max,
+                    blocks=int(blocks) if blocks else None,
                     **deform_panel.route_inputs(self), **pr)
 
     def recalc(self):
@@ -426,8 +434,11 @@ class RoutePage(Page):
                           f"{fmt(prof.across_corners(p['shape'], p['size'], p['corner_r']), 3)}"
                           + (f"; круг перед фасонной волокой Ø {fmt(res['d_round'], 3)}"
                              if res["d_round"] else "") + ".  ")
+        runs_info = (f"Прогонов (заправок стана): {res['runs']}"
+                     + (f" — по ≤ {res['blocks']} блоков" if res["blocks"] else "") + ".  "
+                     if res["runs"] > 1 else "")
         self.summary.setText(
-            shape_info +
+            shape_info + self.blank_summary(rows, p) + runs_info +
             f"Средняя вытяжка {fmt(total ** (1 / n))}  ·  первый проход {fmt(lams[0])}, "
             f"последний {fmt(lams[-1])}  ·  истинная деформация {fmt(math.log(total))}  ·  "
             f"масса 1 м готовой {fmt(gpm, 2)} г. Мощность — на самой проволоке, без потерь "
@@ -437,7 +448,8 @@ class RoutePage(Page):
         self.warn.setText("\n".join(warn))
 
         data, colors = [], []
-        for r, f in zip(rows, forces):
+        lengths = self.unit_lengths(rows, p)
+        for k, (r, f) in enumerate(zip(rows, forces)):
             low = f["gamma"] < p["gmin"]
             note = r["notes"]
             if low:
@@ -446,7 +458,8 @@ class RoutePage(Page):
                          fmt(r["red_cum"], 1), fmt(r["eps"]), fmt(f["sig_out"], 0),
                          fmt(f["sig_d"], 0), fmt(f["gamma"], 2), fmt(f["P"] / 1000, 2),
                          fmt(f["power"], 2), fmt(r["v"], 2),
-                         fmt(r["rpm"], 0) if r["rpm"] else "—", note))
+                         fmt(r["rpm"], 0) if r["rpm"] else "—",
+                         fmt(lengths[k], 1) if lengths else "—", note))
             bad = r["over"] or low
             colors.append((T["anneal"] if r["anneal"] else (T["warn_soft"] if low else None),
                            T["warn"] if bad else None))
@@ -583,6 +596,26 @@ class RoutePage(Page):
         self.status.setText("Не удалось подобрать маршрут с допустимыми вытяжкой и запасом "
                             "прочности. Уменьши перевес обжатия, угол волоки или трение.")
 
+    def unit_lengths(self, rows, p):
+        """Длина бунта или прутка после каждого прохода, м (постоянство объёма), или None."""
+        info = cost_panel.blank_info(self)
+        if not info:
+            return None
+        blank, val = info
+        if blank == BLANK_BAR:
+            return [val * (p["d0"] / r["d_out"]) ** 2 for r in rows]
+        return [val * 1000 / g_per_m(p["rho"], r["d_out"]) for r in rows]
+
+    def blank_summary(self, rows, p):
+        info, lengths = cost_panel.blank_info(self), self.unit_lengths(rows, p)
+        if not info or not lengths:
+            return ""
+        blank, val = info
+        if blank == BLANK_BAR:
+            return (f"Пруток {fmt(val, 2)} м → {fmt(lengths[-1], 1)} м после всех проходов "
+                    f"(удлинение в {fmt(lengths[-1] / val, 2)} раза).  ")
+        return f"Бунт {fmt(val, 0)} кг: длина готовой {fmt(lengths[-1] / 1000, 2)} км.  "
+
     def fit_hardening(self):
         """Показатель упрочнения по замеру: прочность проволоки после известного обжатия."""
         try:
@@ -683,7 +716,7 @@ class RoutePage(Page):
                  "dcool": self.dcool, "ys": self.ys, "sq": self.sq,
                  "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max,
                  "size": self.size, "corner_r": self.corner_r, "lam_shape": self.lam_shape,
-                 "size0": self.size0, "n_shape": self.n_shape}
+                 "size0": self.size0, "n_shape": self.n_shape, "blocks": self.blocks}
         for key, field in names.items():
             if key not in card["params"]:       # старые техкарты: оставляем текущее значение
                 continue
@@ -746,12 +779,14 @@ class RoutePage(Page):
             idx = [i for i, h in enumerate(ROUTE_HEADERS) if h in cols] or \
                 list(range(len(ROUTE_HEADERS)))
             rows, fills = [], []
-            for r, f in zip(self.rows, self.forces):
+            lengths = self.unit_lengths(self.rows, p)
+            for k, (r, f) in enumerate(zip(self.rows, self.forces)):
                 full = [r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),
                         round(r["red"], 2), round(r["red_cum"], 2), round(r["eps"], 4),
                         round(f["sig_out"]), round(f["sig_d"]), round(f["gamma"], 3),
                         round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
-                        round(r["rpm"], 1) if r["rpm"] else "", r["notes"]]
+                        round(r["rpm"], 1) if r["rpm"] else "",
+                        round(lengths[k], 1) if lengths else "", r["notes"]]
                 rows.append([full[i] for i in idx])
                 fills.append("yellow" if r["anneal"] else
                              ("red" if f["gamma"] < p["gmin"] else None))

@@ -30,10 +30,11 @@ def distribute(total, n, ratio):
 
 
 def build_route(d0, dk, n, ratio, limit_pct, lam_max, v_fin, drum_mm, v_stages=None,
-                lams_manual=None, force_anneal=None):
+                lams_manual=None, force_anneal=None, blocks=None):
     """v_stages — скорости на финише каждого этапа между отжигами (иначе у всех v_fin);
     lams_manual — ручная раскладка вытяжек (из редактора обжатий), иначе — автоматическая;
-    force_anneal — номер прохода, перед которым отжиг нужен по прочности готовой проволоки."""
+    force_anneal — номер прохода, перед которым отжиг нужен по прочности готовой проволоки;
+    blocks — блоков на стане: этап длиннее делится на прогоны (заправки) по blocks проходов."""
     total = (d0 / dk) ** 2
     lams = manual_fits(lams_manual, total, n) or distribute(total, n, ratio)
     if min(lams) <= 1.0:
@@ -64,15 +65,30 @@ def build_route(d0, dk, n, ratio, limit_pct, lam_max, v_fin, drum_mm, v_stages=N
                          eps=2 * math.log(base / d_out), v=v, rpm=rpm,
                          anneal=anneal, over=over, notes="; ".join(notes)))
         d_in = d_out
-    # Отжиг делит маршрут на отдельные прогоны через стан: каждый этап идёт на заданной
-    # скорости на своём последнем проходе, внутри этапа скорости — по постоянству объёма.
+    # Отжиг делит маршрут на этапы, а этап длиннее числа блоков стана — на прогоны (каждый —
+    # своя заправка). Последний проход прогона идёт на скорости этапа на финише, внутри прогона
+    # скорости — по постоянству объёма.
     for s, stage in enumerate(split_stages(rows)):
-        d_end = stage[-1]["d_out"]
         v_end = v_stages[s] if v_stages and s < len(v_stages) else v_fin
-        for r in stage:
-            r["v"] = v_end * (d_end / r["d_out"]) ** 2
-            r["rpm"] = r["v"] * 60 / (math.pi * drum_mm / 1000) if drum_mm else None
+        size = int(blocks) if blocks and blocks >= 1 else len(stage)
+        for k in range(0, len(stage), size):
+            run = stage[k:k + size]
+            run[0]["new_run"] = k > 0              # новый прогон без отжига — новая заправка
+            d_end = run[-1]["d_out"]
+            for r in run:
+                r["v"] = v_end * (d_end / r["d_out"]) ** 2
+                r["rpm"] = r["v"] * 60 / (math.pi * drum_mm / 1000) if drum_mm else None
     return total, lams, rows, anneals
+
+
+def split_runs(rows):
+    """Делит проходы на прогоны (заправки стана): новый — после отжига или по числу блоков."""
+    runs = []
+    for r in rows:
+        if not runs or r.get("anneal") or r.get("new_run"):
+            runs.append([])
+        runs[-1].append(r)
+    return runs
 
 
 def split_stages(rows):

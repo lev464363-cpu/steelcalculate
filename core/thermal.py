@@ -32,8 +32,8 @@ def wire_temperatures(rows, forces, rho, c, t0, tw, cool_pct, k_heat=K_HEAT, v_r
     out, t_in = [], t0
     d_k = d_ref or (rows[-1].get("d_out", 1.0) if rows else 1.0)   # диаметр точки калибровки
     for r, f in zip(rows, forces):
-        if r.get("anneal"):
-            t_in = t0
+        if r.get("anneal") or r.get("new_run"):
+            t_in = t0                      # после отжига или между прогонами — остыла
         # в тепло — работа в волоке: напряжение волочения за вычетом противонатяжения
         dt = k_heat * f.get("sig_heat", f["sig_d"]) * 1e6 / (c * rho * 1000)
         t_out = t_in + dt

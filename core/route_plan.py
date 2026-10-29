@@ -4,7 +4,7 @@ import math
 
 from core.dies import DELTA_RISK, delta
 from core import profiles as prof
-from core.drawing import build_route
+from core.drawing import build_route, split_runs
 from core.profiles import ROUND
 from core.forces import eps_from_reduction, route_forces
 from core.mills import check_mill
@@ -15,11 +15,12 @@ from core.util import fmt, g_per_m
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
               "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim",
-              "shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape")
+              "shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape", "blocks")
 # профиль готовой (core.profiles): круг или квадрат / шестигранник с параметрами
 PROFILE_KEYS = ("shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape")
 # могут быть пустыми; dlim — предел Δ по DEFORM (пусто — ориентир Wright)
-OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim") + PROFILE_KEYS[1:]
+OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim", "blocks") + \
+    PROFILE_KEYS[1:]
 # значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
 THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0, sig_ann=None,
                         sig_min=None, sig_max=None, kF=1.0, dlim=None, shape=ROUND)
@@ -30,6 +31,8 @@ def plan_route(p, group="", mill=None):
     p = dict(THERMAL_DEFAULTS, **{k: v for k, v in p.items()
                                   if v is not None or k in OPTIONAL_KEYS})
     n = int(p["n"])
+    # блоков на стане: из профиля стана, иначе — поле «Блоков на стане» (пусто — без деления)
+    blocks = int(mill["drums"]) if mill and mill.get("drums") else p.get("blocks")
     shaped, d_round = [], None
     if p["shape"] != ROUND:
         # профиль: маршрут — по эквивалентному кругу, вытяжки задаёт core.profiles
@@ -42,7 +45,7 @@ def plan_route(p, group="", mill=None):
     def compute(force=None):
         total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
                                                  p["lmax"], p["v"], p["drum"], p.get("v_stages"),
-                                                 p.get("lams"), force)
+                                                 p.get("lams"), force, blocks)
         forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
                               ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
                               back=p["sq"], sig_ann=p["sig_ann"], k_force=p["kF"])
@@ -65,6 +68,9 @@ def plan_route(p, group="", mill=None):
                 best = (key, cand)
         if best is not None:
             total, lams, rows, anneals, forces = best[1]
+    for r in rows:
+        if r.get("new_run"):
+            r["notes"] = "; ".join(x for x in (r["notes"], "новая заправка стана") if x)
     if shaped:
         r_c = p.get("corner_r") or 0.0
         for r in rows:
@@ -129,7 +135,7 @@ def plan_route(p, group="", mill=None):
                 t_wind=thermal[-1]["t_drum"], mill=mill_res,
                 gpm=gpm, gamma_min=min(f["gamma"] for f in forces),
                 sig_end=sig_end, strength_ok=lo_ok and hi_ok, shaped=shaped, d_round=d_round,
-                dk=p["dk"], d0=p["d0"],
+                dk=p["dk"], d0=p["d0"], runs=len(split_runs(rows)), blocks=blocks,
                 power=sum(f["power"] for f in forces), productivity=gpm * p["v"] * 3.6,
                 eps=math.log(total), weak=weak, over=over, warnings=warnings)
 
