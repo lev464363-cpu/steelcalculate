@@ -5,7 +5,7 @@ from core.util import area
 
 
 def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=None, back=0.0,
-                 sig_ann=None):
+                 sig_ann=None, k_force=1.0):
     """Усилие по формуле Зибеля: σвол = σs·[(1 + μ/α)·ln λ + 2α/3] + σq·λ^(−μ/α),
     упрочнение σв(ε) = σв0 + K·ε^n, кривая проходит через σв_ref при ε_ref,
     σs — средний предел текучести в проходе (ys_ratio·σв, по умолчанию 0,85), запас γ = σв после / σвол.
@@ -14,7 +14,8 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
     держит предыдущий барабан, поэтому его мощность меньше на σq·S·v; в нагрев волоки идёт
     только работа деформации и трения σвол − σq.
     sig_ann — прочность после отжига, МПа: с неё начинается кривая упрочнения этапов после
-    отжига (прирост K·εⁿ тот же); без неё — прочность заготовки σв0."""
+    отжига (прирост K·εⁿ тот же); без неё — прочность заготовки σв0.
+    k_force — поправка к напряжению волочения по расчётам DEFORM (core.deform_link), 1 — без."""
     a = math.radians(alpha_deg)
     # sigf — прочность при деформации eps_ref; без eps_ref — в конце этого маршрута
     eps_end = eps_ref if eps_ref else rows[-1]["eps"]
@@ -35,7 +36,7 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
         s_in, s_out = sig(e_in, base), sig(r["eps"], base)
         sigma_s = ys_ratio * (s_in + s_out) / 2
         sq = tension(j)
-        sd = (sigma_s * ((1 + mu / a) * math.log(r["lam"]) + 2 * a / 3)
+        sd = (sigma_s * ((1 + mu / a) * math.log(r["lam"]) + 2 * a / 3) * k_force
               + sq * r["lam"] ** (-mu / a))
         s = area(r["d_out"])
         force = sd * s                         # Н
@@ -50,3 +51,23 @@ def route_forces(rows, alpha_deg, mu, sig0, sigf, n_h, ys_ratio=0.85, eps_ref=No
 def eps_from_reduction(red_pct):
     """Истинная деформация по обжатию в процентах: ε = −ln(1 − δ)."""
     return -math.log(1 - red_pct / 100)
+
+
+def fit_n(sig0, sigf, red_ref, red_meas, sig_meas):
+    """Показатель упрочнения n по одному замеру: прочность sig_meas после суммарного обжатия
+    red_meas, %. Кривая σв = σв0 + (σв,ref − σв0)·(ε/ε_ref)ⁿ проходит через обе точки:
+        n = ln((σзам − σв0) / (σв,ref − σв0)) / ln(εзам / ε_ref)."""
+    from core.util import InputError
+    if not 0 < red_meas < 100:
+        raise InputError("Обжатие замера — от 0 до 100 %.")
+    if abs(red_meas - red_ref) < 0.5:
+        raise InputError("Замер должен быть при другом обжатии, чем опорная точка "
+                         f"({red_ref:g} %): нужна вторая точка кривой.")
+    if sig_meas <= sig0:
+        raise InputError("Прочность по замеру должна быть выше прочности заготовки.")
+    e_m, e_r = eps_from_reduction(red_meas), eps_from_reduction(red_ref)
+    n = math.log((sig_meas - sig0) / (sigf - sig0)) / math.log(e_m / e_r)
+    if not 0.05 <= n <= 1.5:
+        raise InputError(f"По замеру выходит n = {n:.2f} — вне разумного диапазона 0,05–1,5. "
+                         "Проверь замер и прочность заготовки и опорную точку.")
+    return n

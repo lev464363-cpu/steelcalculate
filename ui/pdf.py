@@ -8,15 +8,25 @@ from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocume
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from core.util import fmt
+from ui.popup import notify
 
 
 def _e(x):
     return html.escape(str(x))
 
 
+def _target(p):
+    """Готовый размер: диаметр круга или профиль с эквивалентным диаметром."""
+    from core import profiles as prof
+    shape = p.get("shape") or prof.ROUND
+    if shape == prof.ROUND:
+        return f"{fmt(p['dk'], 2)} мм"
+    return f"{prof.label(shape, p['size'])} (экв. Ø {fmt(p['dk'], 2)} мм)"
+
+
 def card_html(name, mill, group, p, res, note=""):
     info = [("Стан", mill or "—"), ("Группа сталей", group),
-            ("Маршрут", f"{fmt(p['d0'], 2)} → {fmt(p['dk'], 2)} мм за {res['n']} проходов"),
+            ("Маршрут", f"{fmt(p['d0'], 2)} → {_target(p)} за {res['n']} проходов"),
             ("Общая вытяжка / обжатие", f"{fmt(res['total'], 2)} / "
                                         f"{fmt((1 - 1 / res['total']) * 100, 1)} %"),
             ("Перевес обжатия в начале", fmt(p["ratio"], 2)),
@@ -107,19 +117,19 @@ def operator_html(name, mill, group, p, res, dies=None):
     temps = res.get("thermal") or [None] * len(res["rows"])
     stages = 1 + sum(1 for r in res["rows"] if r["anneal"])
     info = [("Техкарта", name), ("Стан", mill or "—"), ("Группа сталей", group),
-            ("Маршрут", f"{fmt(p['d0'], 2)} → {fmt(p['dk'], 2)} мм, проходов {res['n']}"
+            ("Маршрут", f"{fmt(p['d0'], 2)} → {_target(p)}, проходов {res['n']}"
                         + (f", этапов {stages} (отжигов {res['anneals']})" if stages > 1 else "")),
             ("Скорость на финише", f"{fmt(p['v'], 1)} м/с"),
             ("Противонатяжение", f"{fmt(p['sq'], 0)} МПа" if p.get("sq") else "нет")]
     left = "".join(f"<tr><td class='k'>{_e(k)}</td><td><b>{_e(v)}</b></td></tr>" for k, v in info)
-    heads = ["№", "Барабан", "Ø волоки, мм", "Фильера №", "Угол 2α, °", "Скорость, м/с",
+    heads = ["№", "Барабан", "Размер волоки, мм", "Фильера №", "Угол 2α, °", "Скорость, м/с",
              "Обороты, об/мин", "T на барабане (расчёт), °C", "Замер Ø, мм", "Фильера заменена", "Отметка"]
     rows = ""
     for r, m, d, t in zip(res["rows"], per, dies, temps):
         if r["anneal"]:
             rows += (f"<tr class='ann'><td colspan='{len(heads)}'><b>ОТЖИГ — далее новый прогон "
                      f"с диаметра {fmt(r['d_in'])} мм</b></td></tr>")
-        cells = [r["i"], m["drum"] if m else "—", fmt(r["d_out"]),
+        cells = [r["i"], m["drum"] if m else "—", r.get("profile") or fmt(r["d_out"]),
                  (d["stock"] or "подобрать") if d else "—", d["two_std"] if d else "—",
                  fmt(r["v"], 2), fmt(r["rpm"], 0) if r.get("rpm") else "—",
                  fmt(t["t_drum"], 0) if t else "—", "", "", ""]
@@ -169,7 +179,7 @@ def _save_pdf(parent, title, default_name, html_text, what):
     except Exception as e:  # покажем любую ошибку печати, а не упадём молча
         QMessageBox.warning(parent, "Не удалось создать PDF", f"{type(e).__name__}: {e}")
         return
-    QMessageBox.information(parent, "Готово", f"{what.capitalize()} сохранена:\n{path}")
+    notify(parent, f"{what.capitalize()} сохранена", "ok", detail=path)
 
 
 def save_card_pdf(parent, name, mill, group, p, res, note=""):

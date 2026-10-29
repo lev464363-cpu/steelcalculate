@@ -2,7 +2,10 @@
 Общий для страницы маршрута, техкарт, сравнения вариантов и печати."""
 import math
 
-from core.drawing import build_route
+from core.dies import DELTA_RISK, delta
+from core import profiles as prof
+from core.drawing import build_route, split_runs
+from core.profiles import ROUND
 from core.forces import eps_from_reduction, route_forces
 from core.mills import check_mill
 from core.thermal import T_AGING, T_WINDING, wire_temperatures
@@ -11,11 +14,16 @@ from core.util import fmt, g_per_m
 # Параметры маршрута: всё, что нужно для расчёта и сохраняется в техкарте
 PARAM_KEYS = ("d0", "dk", "n", "ratio", "lmax", "v", "drum", "limit", "alpha", "mu", "gmin",
               "sig0", "sigf", "nh", "rho", "redref", "t0", "tw", "cool", "cp", "vcool",
-              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max")
-OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max")   # могут быть пустыми
+              "dcool", "lams", "ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim",
+              "shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape", "blocks")
+# профиль готовой (core.profiles): круг или квадрат / шестигранник с параметрами
+PROFILE_KEYS = ("shape", "size", "corner_r", "way", "lam_shape", "size0", "n_shape")
+# могут быть пустыми; dlim — предел Δ по DEFORM (пусто — ориентир Wright)
+OPTIONAL_KEYS = ("drum", "lams", "sig_ann", "sig_min", "sig_max", "dlim", "blocks") + \
+    PROFILE_KEYS[1:]
 # значения для техкарт, сохранённых до появления расчёта нагрева, σт/σв и противонатяжения
 THERMAL_DEFAULTS = dict(t0=20.0, tw=25.0, cool=50.0, cp=470.0, ys=0.85, sq=0.0, sig_ann=None,
-                        sig_min=None, sig_max=None)
+                        sig_min=None, sig_max=None, kF=1.0, dlim=None, shape=ROUND)
 
 
 def plan_route(p, group="", mill=None):
@@ -23,12 +31,54 @@ def plan_route(p, group="", mill=None):
     p = dict(THERMAL_DEFAULTS, **{k: v for k, v in p.items()
                                   if v is not None or k in OPTIONAL_KEYS})
     n = int(p["n"])
-    total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
-                                             p["lmax"], p["v"], p["drum"], p.get("v_stages"),
-                                             p.get("lams"))
-    forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
-                          ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
-                          back=p["sq"], sig_ann=p["sig_ann"])
+    # блоков на стане: из профиля стана, иначе — поле «Блоков на стане» (пусто — без деления)
+    blocks = int(mill["drums"]) if mill and mill.get("drums") else p.get("blocks")
+    shaped, d_round = [], None
+    if p["shape"] != ROUND:
+        # профиль: маршрут — по эквивалентному кругу, вытяжки задаёт core.profiles
+        prof.check(p["shape"], p["size"], p.get("corner_r") or 0.0)
+        p["dk"] = prof.eq_diameter(p["shape"], p["size"], p.get("corner_r") or 0.0)
+        if p.get("way") == prof.FROM_PROFILE:
+            p["d0"] = prof.eq_diameter(p["shape"], p["size0"], p.get("corner_r") or 0.0)
+        p["lams"], shaped, d_round = prof.shaped_lams(p, n)
+
+    def compute(force=None):
+        total, lams, rows, anneals = build_route(p["d0"], p["dk"], n, p["ratio"], p["limit"],
+                                                 p["lmax"], p["v"], p["drum"], p.get("v_stages"),
+                                                 p.get("lams"), force, blocks)
+        forces = route_forces(rows, p["alpha"], p["mu"], p["sig0"], p["sigf"], p["nh"],
+                              ys_ratio=p["ys"], eps_ref=eps_from_reduction(p["redref"]),
+                              back=p["sq"], sig_ann=p["sig_ann"], k_force=p["kF"])
+        return total, lams, rows, anneals, forces
+
+    total, lams, rows, anneals, forces = compute()
+    if p["sig_max"] is not None and forces[-1]["sig_out"] > p["sig_max"] + 1e-9:
+        # Готовая проволока прочнее требования: отжиг по прочности. Перебираем место отжига
+        # с конца маршрута и берём то, где прочность наибольшая, но не выше верхней границы
+        # (и, если задана, не ниже нижней).
+        best = None
+        for j in range(n, 1, -1):
+            cand = compute(j)
+            s = cand[4][-1]["sig_out"]
+            if s > p["sig_max"] + 1e-9:
+                continue
+            in_range = p["sig_min"] is None or s >= p["sig_min"] - 1e-9
+            key = (in_range, s)
+            if best is None or key > best[0]:
+                best = (key, cand)
+        if best is not None:
+            total, lams, rows, anneals, forces = best[1]
+    for r in rows:
+        if r.get("new_run"):
+            r["notes"] = "; ".join(x for x in (r["notes"], "новая заправка стана") if x)
+    if shaped:
+        r_c = p.get("corner_r") or 0.0
+        for r in rows:
+            if r["i"] in shaped:
+                a_i = prof.size_from_area(p["shape"], math.pi * r["d_out"] ** 2 / 4, r_c)
+                r["profile"] = prof.label(p["shape"], round(a_i, 3))
+                note = f"фасонная волока: {r['profile']}"
+                r["notes"] = f"{r['notes']}; {note}" if r["notes"] else note
     gpm = g_per_m(p["rho"], p["dk"])
     weak = [r["i"] for r, f in zip(rows, forces) if f["gamma"] < p["gmin"]]
     over = [r["i"] for r in rows if r["over"]]
@@ -58,6 +108,13 @@ def plan_route(p, group="", mill=None):
                         + ("Нужно больше обжатие после последнего отжига или более прочная "
                            "заготовка." if not lo_ok else
                            "Нужен отжиг ближе к финишу или меньшее суммарное обжатие."))
+    # риск разрыва сердцевины («ёлочка»): параметр очага Δ выше предела
+    d_lim = p["dlim"] or DELTA_RISK
+    burst = [r["i"] for r in rows if delta(math.radians(p["alpha"]), r["lam"]) > d_lim + 1e-9]
+    if burst:
+        warnings.append(f"Параметр очага деформации Δ выше {fmt(d_lim, 1)} на проходах "
+                        f"{', '.join(map(str, burst))}: риск разрыва сердцевины. Уменьши угол "
+                        f"волоки или увеличь обжатие на этих проходах (вкладка «Деформация»).")
     # опорная скорость охлаждения: если не задана — охлаждение задано при текущей скорости
     v_ref = p.get("vcool") or p["v"]
     thermal = wire_temperatures(rows, forces, p["rho"], p["cp"], p["t0"], p["tw"], p["cool"],
@@ -77,23 +134,33 @@ def plan_route(p, group="", mill=None):
                 thermal=thermal, t_max=max(t["t_out"] for t in thermal),
                 t_wind=thermal[-1]["t_drum"], mill=mill_res,
                 gpm=gpm, gamma_min=min(f["gamma"] for f in forces),
-                sig_end=sig_end, strength_ok=lo_ok and hi_ok,
+                sig_end=sig_end, strength_ok=lo_ok and hi_ok, shaped=shaped, d_round=d_round,
+                dk=p["dk"], d0=p["d0"], runs=len(split_runs(rows)), blocks=blocks,
                 power=sum(f["power"] for f in forces), productivity=gpm * p["v"] * 3.6,
                 eps=math.log(total), weak=weak, over=over, warnings=warnings)
 
 
 def suggest_n_full(p, group="", mill=None):
-    """Минимальное число проходов, при котором и вытяжка, и запас прочности в норме."""
+    """Минимальное число проходов, при котором вытяжка, запас прочности и (если задано)
+    требование к прочности готовой проволоки в норме. Если требование по прочности не
+    выполнимо ни при каком числе проходов — минимальное по вытяжке и запасу прочности."""
     from core.drawing import distribute
     from core.util import InputError
+    fallback = None
+    shaped = p.get("shape", ROUND) != ROUND      # профиль: вытяжки строит core.profiles
     for n in range(1, 61):
-        lams = distribute((p["d0"] / p["dk"]) ** 2, n, p["ratio"])
-        if max(lams) > p["lmax"] or min(lams) <= 1:
-            continue
+        if not shaped:
+            lams = distribute((p["d0"] / p["dk"]) ** 2, n, p["ratio"])
+            if max(lams) > p["lmax"] or min(lams) <= 1:
+                continue
         try:
             res = plan_route(dict(p, n=n), group, mill)
         except InputError:
             continue
+        if shaped and max(res["lams"]) > p["lmax"] + 1e-9:
+            continue
         if res["gamma_min"] >= p["gmin"]:
-            return n
-    return None
+            if res["strength_ok"]:
+                return n
+            fallback = fallback or n
+    return fallback

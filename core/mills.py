@@ -1,7 +1,7 @@
 """Профили станов (файл stany.json рядом с программой) и проверка маршрута на стане."""
 import os
 
-from core.drawing import split_stages
+from core.drawing import split_runs
 from core.paths import app_dir
 from core.storage import load_list, save_list
 from core.util import fmt
@@ -37,7 +37,7 @@ def check_mill(mill, rows, forces, v_fin):
     drums = int(mill["drums"])
     warnings, per = [], []
     stages, k = [], 0
-    for st in split_stages(rows):
+    for st in split_runs(rows):            # прогон — проходы одной заправки стана
         stages.append((st, forces[k:k + len(st)]))
         k += len(st)
     too_long = [str(i + 1) for i, (st, _) in enumerate(stages) if len(st) > drums]

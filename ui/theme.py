@@ -9,13 +9,17 @@ THEMES = {
                  muted="#8C96A0", tertiary="#5A636D", border="#262D35", accent="#F3E600",
                  accent_hover="#FFF34D", accent_text="#0D0F12", accent_soft="#2A2810",
                  side="#08090B", side_text="#7D8791", side_active="#13171B", side_title="#FFFFFF",
-                 warn="#FF4D6A", warn_soft="#2B1219", anneal="#2A2810", grid="#1C2228",
+                 warn="#FF4D6A", warn_soft="#2B1219", anneal="#2A2810", ok_soft="#10251B",
+                 pill_text="#F3E600",
+                 grid="#1C2228",
                  line="#00E1F0", glow_alpha=120),
     "light": dict(bg="#F5F5F7", surface="#FFFFFF", surface2="#F2F2F5", text="#1D1D1F",
                   muted="#6E6E73", tertiary="#A1A1A6", border="#DCDCE1", accent="#E8C500",
                   accent_hover="#F5D61A", accent_text="#1D1D1F", accent_soft="#FFF6C7",
                   side="#ECECEF", side_text="#5C5C61", side_active="#E0E0E5", side_title="#1D1D1F",
-                  warn="#D70032", warn_soft="#FDE8EC", anneal="#FFF6C7", grid="#E6E6EB",
+                  warn="#D70032", warn_soft="#FDE8EC", anneal="#FFF6C7", ok_soft="#E5F4EA",
+                  pill_text="#1D1D1F",
+                  grid="#E6E6EB",
                   line="#0089A3", glow_alpha=60),
 }
 T = dict(THEMES["dark"])  # текущая тема
@@ -59,9 +63,30 @@ def rescale_all():
             _scaled.remove((widget, method, n))
 
 
+def _check_icon(color):
+    """Галочка для отмеченных флажков: SVG во временной папке (таблица стилей Qt берёт картинку
+    только из файла). Путь — с прямыми слешами, так его понимает и Windows."""
+    import os
+    import tempfile
+    folder = os.path.join(tempfile.gettempdir(), "kalkulyator_volocheniya")
+    path = os.path.join(folder, f"check_{color.lstrip('#')}.svg")
+    if not os.path.exists(path):
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+                         f'<path d="M3.5 8.4l3 3 6-6.6" fill="none" stroke="{color}" '
+                         f'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+        except OSError:
+            return ""
+    return path.replace("\\", "/")
+
+
 def build_qss(t):
     def pt(x):
         return round(x * scale(), 1)
+    check = _check_icon(t["accent_text"])
+    check_img = f'image: url("{check}");' if check else ""
     return f"""
     QWidget {{ font-family: {TEXT}; font-size: {pt(10)}pt; color: {t['text']}; }}
     QMainWindow, QScrollArea, QScrollArea > QWidget > QWidget {{ background: {t['bg']}; }}
@@ -109,14 +134,20 @@ def build_qss(t):
     QLineEdit:hover, QComboBox:hover {{ border-color: {t['tertiary']}; }}
     QLineEdit:focus, QComboBox:focus {{ border: 1px solid {t['accent']}; }}
     QLineEdit:disabled, QComboBox:disabled {{ color: {t['tertiary']}; }}
+    QPlainTextEdit, QTextEdit {{ background: {t['surface2']}; border: 1px solid {t['border']};
+                                border-radius: 10px; padding: 6px 8px;
+                                selection-background-color: {t['accent']};
+                                selection-color: {t['accent_text']}; }}
+    QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t['accent']}; }}
+    QPlainTextEdit:disabled {{ background: {t['surface']}; color: {t['tertiary']}; }}
     QLineEdit[error="true"] {{ border: 1px solid {t['warn']}; background: {t['warn_soft']}; }}
     QComboBox::drop-down {{ border: none; width: 24px; }}
     QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['border']};
                                    selection-background-color: {t['accent_soft']};
                                    selection-color: {t['text']}; outline: 0; }}
 
-    QPushButton {{ background: transparent; color: {t['text']}; border: 1px solid {t['border']};
-                  border-radius: 8px; padding: 8px 18px; font-family: {DISPLAY}; }}
+    QPushButton {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['border']};
+                  border-radius: 10px; padding: 8px 18px; font-family: {DISPLAY}; }}
     QPushButton:hover {{ border-color: {t['accent']}; color: {t['accent']}; }}
     QPushButton:pressed {{ background: {t['accent_soft']}; }}
     QPushButton[primary="true"] {{ background: {t['accent']}; color: {t['accent_text']};
@@ -125,21 +156,35 @@ def build_qss(t):
 
     QTabWidget::pane {{ border: none; background: transparent; }}
     QStackedWidget#qt_tabwidget_stackedwidget, QWidget#refTab {{ background: transparent; }}
-    QTabBar::tab {{ background: transparent; color: {t['muted']}; padding: 8px 16px;
-                   border: none; border-bottom: 2px solid transparent; margin-right: 2px;
+    /* внутренние вкладки — «таблетки»; вкладки раздела — с подчёркиванием */
+    QTabBar::tab {{ background: transparent; color: {t['muted']}; padding: 6px 9px;
+                   border: 1px solid transparent; border-radius: 9px; margin: 2px 1px 6px 0;
                    font-family: {DISPLAY}; }}
-    QTabBar::tab:hover {{ color: {t['text']}; }}
-    QTabBar::tab:selected {{ color: {t['text']}; font-weight: 600;
-                            border-bottom: 2px solid {t['accent']}; }}
-    QTabWidget#sectionTabs > QTabBar::tab {{ font-size: {pt(11)}pt; padding: 10px 20px; }}
+    QTabBar::tab:hover {{ color: {t['text']}; background: {t['surface2']}; }}
+    QTabBar::tab:selected {{ color: {t['pill_text']}; font-weight: 600; background: {t['accent_soft']};
+                            border-color: {t['accent_soft']}; }}
+    QTabWidget#sectionTabs > QTabBar::tab {{ font-size: {pt(11)}pt; padding: 10px 18px;
+                                            border-radius: 0; margin: 0 2px 0 0;
+                                            border: none; border-bottom: 2px solid transparent; }}
+    QTabWidget#sectionTabs > QTabBar::tab:hover {{ background: transparent; }}
+    QTabWidget#sectionTabs > QTabBar::tab:selected {{ color: {t['text']}; background: transparent;
+                                                     border-bottom: 2px solid {t['accent']}; }}
     QTabWidget#sectionTabs > QTabBar {{ border-bottom: 1px solid {t['border']}; }}
+    QTabBar QToolButton {{ background: {t['surface2']}; border: 1px solid {t['border']};
+                          border-radius: 6px; }}
 
     QTableWidget {{ background: {t['surface']}; alternate-background-color: {t['surface2']};
-                   border: 1px solid {t['border']}; border-radius: 10px; gridline-color: {t['grid']};
-                   selection-background-color: {t['accent_soft']}; selection-color: {t['text']}; }}
+                   border: 1px solid {t['border']}; border-radius: 14px; gridline-color: {t['grid']};
+                   selection-background-color: {t['accent_soft']}; selection-color: {t['text']};
+                   padding: 4px; }}
+    QTableWidget::item {{ padding: 4px 8px; border: none; }}
     QHeaderView::section {{ background: {t['surface']}; color: {t['muted']}; border: none;
-                           border-bottom: 1px solid {t['accent']}; padding: 8px 10px;
+                           border-bottom: 1px solid {t['border']}; padding: 9px 10px;
                            font-family: {DISPLAY}; font-weight: 600; }}
+    QTableWidget::indicator {{ width: 16px; height: 16px; border-radius: 4px;
+                              border: 1px solid {t['tertiary']}; background: {t['surface2']}; }}
+    QTableWidget::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']};
+                                      {check_img} }}
     QTableCornerButton::section {{ background: {t['surface']}; border: none; }}
 
     QToolBox::tab {{ background: {t['surface2']}; color: {t['muted']}; border: 1px solid {t['border']};
@@ -155,9 +200,32 @@ def build_qss(t):
     QCheckBox {{ spacing: 10px; }}
     QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px;
                            border: 1px solid {t['tertiary']}; background: {t['surface2']}; }}
-    QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
-    QToolTip {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['accent']};
-               padding: 6px; }}
+    QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']};
+                                   {check_img} }}
+    QCheckBox::indicator:unchecked:disabled {{ background: {t['surface']}; border-color: {t['border']}; }}
+    QToolTip {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['border']};
+               border-radius: 8px; padding: 7px 9px; }}
+
+    /* диалоги и всплывающие уведомления */
+    QMessageBox, QInputDialog, QDialog {{ background: {t['surface']}; }}
+    QMessageBox QLabel, QDialog QLabel {{ background: transparent; }}
+    QMessageBox QPushButton, QInputDialog QPushButton {{ min-width: 90px; }}
+    QFrame#toast {{ background: {t['surface2']}; border: 1px solid {t['border']};
+                   border-radius: 14px; }}
+    QFrame#toast QLabel {{ background: transparent; }}
+    QLabel#toastTitle {{ font-family: {DISPLAY}; font-weight: 600; }}
+    QLabel#toastText {{ color: {t['muted']}; }}
+
+    /* раскрывающиеся разделы (себестоимость) */
+    QFrame#section {{ background: {t['surface']}; border: 1px solid {t['border']};
+                     border-radius: 12px; }}
+    QFrame#section[open="true"] {{ border-color: {t['tertiary']}; }}
+    QToolButton#sectionHead {{ background: transparent; border: none; text-align: left;
+                              padding: 9px 12px; font-family: {DISPLAY}; font-weight: 600;
+                              color: {t['text']}; }}
+    QToolButton#sectionHead:hover {{ color: {t['accent']}; }}
+    QLabel#sectionSummary {{ color: {t['muted']}; font-size: {pt(9)}pt; padding: 0 12px 8px 34px; }}
+    QFrame#section QLabel {{ background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 4px; min-height: 30px; }}
     QScrollBar::handle:vertical:hover {{ background: {t['accent']}; }}

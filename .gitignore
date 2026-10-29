@@ -4,6 +4,8 @@ filery.json
 tekhkarty.json
 stany.json
 dopuski.json
+marki.json
+deform.json
 *.zip
 *.json.tmp
 *.повреждён-*.json

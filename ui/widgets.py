@@ -3,7 +3,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QPainter
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QPushButton, QStackedWidget, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QToolBox, QVBoxLayout, QWidget)
+                               QSizePolicy, QStyledItemDelegate, QTableWidgetItem, QTabWidget,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from core.util import InputError, num
 from ui.hud import HudPanel, paint_hud
@@ -80,6 +81,71 @@ class Card(QFrame):
 
     def set(self, text):
         self.v.setText(text)
+
+
+class Collapsible(QFrame):
+    """Раскрывающийся раздел: цветная метка, заголовок, строка-сводка значений и тело с полями.
+    Открывается и закрывается щелчком по заголовку, независимо от соседних разделов."""
+
+    def __init__(self, title, color, open_=False):
+        super().__init__()
+        self.setObjectName("section")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.title, self.color = title, color
+        self.head = QToolButton()
+        self.head.setObjectName("sectionHead")
+        self.head.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.head.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.head.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.head.setIcon(_dot_icon(color))
+        self.head.clicked.connect(lambda: self.set_open(not self.is_open))
+        lay.addWidget(self.head)
+        self.summary = QLabel("")
+        self.summary.setObjectName("sectionSummary")
+        self.summary.setWordWrap(True)
+        lay.addWidget(self.summary)
+        self.body = QWidget()
+        self.grid = QGridLayout(self.body)
+        self.grid.setContentsMargins(14, 2, 14, 12)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(6)
+        lay.addWidget(self.body)
+        self.is_open = None
+        self.set_open(open_)
+
+    def set_open(self, on):
+        if on == self.is_open:
+            return
+        self.is_open = on
+        self.body.setVisible(on)
+        self.summary.setVisible(not on and bool(self.summary.text()))
+        self.setProperty("open", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self._head_text()
+
+    def _head_text(self):
+        # цветная метка — иконкой; ▾ / ▸ — раздел открыт / свёрнут
+        self.head.setText(f"{self.title}   {'▾' if self.is_open else '▸'}")
+
+    def set_summary(self, text):
+        self.summary.setText(text)
+        self.summary.setVisible(not self.is_open and bool(text))
+
+
+def _dot_icon(color):
+    from PySide6.QtGui import QIcon, QPixmap
+    pm = QPixmap(px(12), px(12))
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(1, 1, px(10), px(10))
+    p.end()
+    return QIcon(pm)
 
 
 def panel():
@@ -200,14 +266,8 @@ class Page(QWidget):
             parent = w.parentWidget()
             if isinstance(parent, QStackedWidget) and isinstance(parent.parentWidget(), QTabWidget):
                 parent.parentWidget().setCurrentWidget(w)
-            box = parent
-            for _ in range(4):        # группа «гармошки» лежит в служебной прокрутке QToolBox
-                if box is None or box is self:
-                    break
-                if isinstance(box, QToolBox) and box.indexOf(w) >= 0:
-                    box.setCurrentWidget(w)
-                    break
-                box = box.parentWidget()
+            if isinstance(w, Collapsible):
+                w.set_open(True)         # поле в свёрнутом разделе — раскрыть
             w = parent
 
     def safe_recalc(self, *args):
@@ -252,3 +312,73 @@ def tab_box(tabs, title):
     lay.setSpacing(12)
     tabs.addTab(page, title)
     return lay
+
+
+def compact_combo(combo, chars=24):
+    """Ширина списка не растёт под самое длинное название (иначе раздвигается вся страница);
+    полный текст виден в раскрытом списке и в подсказке."""
+    from PySide6.QtWidgets import QComboBox
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(chars)
+    combo.view().setMinimumWidth(px(420))
+    if not getattr(combo, "_tip_hooked", False):
+        combo.currentTextChanged.connect(combo.setToolTip)
+        combo._tip_hooked = True
+    combo.setToolTip(combo.currentText())
+
+
+def fill_groups(combo, tooltips=False):
+    """Список групп сталей (встроенные и свои марки) с разделителями по семействам.
+    Выбор сохраняется; сигнал о смене — только если выбранной группы больше нет.
+    Возвращает True, если выбор изменился."""
+    from core.data import GROUPS
+    compact_combo(combo)
+    cur = combo.currentText()
+    names = [combo.itemText(i) for i in range(combo.count()) if combo.itemText(i)]
+    if names == list(GROUPS) and cur in GROUPS:
+        return False
+    combo.blockSignals(True)
+    combo.clear()
+    family = None
+    for name, grp in GROUPS.items():
+        if grp.get("family") != family:
+            if family is not None:
+                combo.insertSeparator(combo.count())
+            family = grp.get("family")
+        combo.addItem(name)
+        if tooltips:
+            combo.setItemData(combo.count() - 1, f"{family}\n{name}", Qt.ItemDataRole.ToolTipRole)
+    changed = cur not in GROUPS
+    if not changed:
+        combo.setCurrentText(cur)
+    combo.blockSignals(False)
+    if changed:
+        combo.currentIndexChanged.emit(combo.currentIndex())
+    return changed
+
+
+SHARE_ROLE = Qt.ItemDataRole.UserRole + 1     # доля 0…1 и цвет полоски: (доля, "#rrggbb")
+
+
+class ShareBarDelegate(QStyledItemDelegate):
+    """Ячейка с полоской доли под текстом (структура себестоимости)."""
+
+    def paint(self, painter, option, index):
+        data = index.data(SHARE_ROLE)
+        if data:
+            share, color = data
+            r = option.rect.adjusted(px(6), px(7), -px(6), -px(7))
+            c = QColor(color)
+            c.setAlpha(70)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(c)
+            w = max(px(3), r.width() * min(max(share, 0.0), 1.0))
+            painter.drawRoundedRect(r.x(), r.y(), w, r.height(), px(4), px(4))
+            painter.restore()
+        super().paint(painter, option, index)
+
+
+def dot_icon(color):
+    return _dot_icon(color)

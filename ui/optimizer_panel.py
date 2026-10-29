@@ -4,10 +4,12 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QGridLayout, 
                                QLabel, QLineEdit, QVBoxLayout, QWidget)
 
 from core.data import GROUPS
+from core.dies import DELTA_RISK
 from core.optimize import DEFAULT_LIMITS, optimize
 from core.util import InputError, fmt, num
 from ui.theme import px
-from ui.widgets import FieldError, NumField, button, fill_table, label, make_table, panel
+from ui.widgets import (FieldError, NumField, button, fill_groups, fill_table, label, make_table,
+                        panel)
 
 HEAD = ["Диаметр, мм", "Проходов", "Перевес обжатия", "Отжигов",
         "Скорость стана на финише, м/с", "Вытяжка первого / последнего прохода",
@@ -29,13 +31,7 @@ def build(page, tabs, index):
     g.setContentsMargins(16, 12, 16, 12)
     g.setHorizontalSpacing(12)
     page.o_group = QComboBox()
-    family = None
-    for name, grp in GROUPS.items():
-        if grp.get("family") != family:
-            if family is not None:
-                page.o_group.insertSeparator(page.o_group.count())
-            family = grp.get("family")
-        page.o_group.addItem(name)
+    fill_groups(page.o_group)
     g.addWidget(QLabel("Группа сталей"), 0, 0)
     g.addWidget(page.o_group, 0, 1, 1, 3)
     page.o_rho = NumField("Плотность")
@@ -56,6 +52,11 @@ def build(page, tabs, index):
     for i, (text, w) in enumerate(grid):
         g.addWidget(QLabel(text), 1 + i // 2, (i % 2) * 2)
         g.addWidget(w, 1 + i // 2, (i % 2) * 2 + 1)
+    page.o_burst = QCheckBox("Не допускать риска разрыва сердцевины (Δ)")
+    page.o_burst.setChecked(True)
+    page.o_burst.setToolTip("Отбрасывать маршруты с параметром очага Δ выше предела: 4 по Wright "
+                            "или предел по поправкам DEFORM.")
+    g.addWidget(page.o_burst, 5, 2, 1, 2)
     page.o_from_route = QCheckBox("Цены, охлаждение, трение, стан и требование к прочности — "
                                   "из «Маршрута»")
     page.o_from_route.setChecked(True)
@@ -98,7 +99,7 @@ def _route_conditions(page):
     cost = cost_panel.read_inputs(route) if route.cost_on.isChecked() else None
     if cost:
         cost.update(copper=False, full=False)
-    overrides = {k: p[k] for k in ("ys", "sq", "sig_ann", "sig_min", "sig_max")}
+    overrides = {k: p[k] for k in ("ys", "sq", "sig_ann", "sig_min", "sig_max", "kF", "dlim")}
     return cost, thermal, p["alpha"], p["mu"], route.mill_profile(), overrides
 
 
@@ -123,6 +124,8 @@ def run_opt(page):
         if limits["lam_min"] <= 1:
             raise FieldError(page.o_lmin, "Минимальная вытяжка должна быть больше 1.")
         cost, thermal, alpha, mu, mill, overrides = _route_conditions(page)
+        if page.o_burst.isChecked():
+            limits["delta_max"] = (overrides or {}).get("dlim") or DELTA_RISK
     except FieldError as e:
         e.field.set_error(True, str(e))
         page.o_msg.setText(str(e))

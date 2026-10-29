@@ -192,12 +192,20 @@ class DraftEditor(QWidget):
         crit, smax, n = self._crit(), self._scale_max(), len(self.rows)
 
         # заголовок и легенда
+        legend = (("выше предела", T["warn"]), ("у предела", ORANGE),
+                  ("близко", T["accent"]), ("норма", T["line"]))
+        fm = p.fontMetrics()
+        legend_w = sum(fm.horizontalAdvance(t) + px(28) for t, _ in legend) + px(18)
+        room = W - legend_w - plot.left() - px(12)
+        # заголовок короче, если рядом с легендой не помещается (узкое окно)
+        title = next((t for t in ("ОБЖАТИЕ ПО ПРОХОДАМ, %  ·  ТЯНИ СТОЛБЕЦ МЫШЬЮ",
+                                  "ОБЖАТИЕ ПО ПРОХОДАМ, %", "ОБЖАТИЕ, %")
+                      if fm.horizontalAdvance(t) <= room), "")
         p.setPen(QColor(T["muted"]))
-        p.drawText(QRectF(plot.left(), px(12), plot.width(), 18), Qt.AlignmentFlag.AlignLeft,
-                   "ОБЖАТИЕ ПО ПРОХОДАМ, %  ·  ТЯНИ СТОЛБЕЦ МЫШЬЮ")
+        p.drawText(QRectF(plot.left(), px(12), max(room, 0), 18), Qt.AlignmentFlag.AlignLeft,
+                   title)
         lx = W - px(18)
-        for text, col in (("выше предела", T["warn"]), ("у предела", ORANGE),
-                          ("близко", T["accent"]), ("норма", T["line"])):
+        for text, col in legend:
             tw = p.fontMetrics().horizontalAdvance(text)
             lx -= tw
             p.setPen(QColor(T["muted"]))

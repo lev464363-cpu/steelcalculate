@@ -1,6 +1,6 @@
 """Вкладка «Нагрев и стан» в результатах маршрута: температура по проходам, загрузка привода,
 скольжение, подбор охлаждения по замеру пирометром."""
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from core.thermal import T_AGING, T_WINDING, calibrate_cooling
 from core.util import fmt
@@ -22,22 +22,24 @@ def build_results(page, tabs):
     cg = QGridLayout()
     cg.setSpacing(12)
     for i, c in enumerate(page.heat_cards):
-        cg.addWidget(c, 0, i)
+        cg.addWidget(c, i // 2, i % 2)          # 2×2 — не раздвигает окно
     lay.addLayout(cg)
     page.heat_info = label("", "muted", True)
     lay.addWidget(page.heat_info)
 
-    cal = QHBoxLayout()
-    cal.addWidget(QLabel("Замер пирометром на барабане прохода №"))
+    lay.addWidget(label("Замер пирометром на барабане", "section"))
+    cal = QGridLayout()
+    cal.setHorizontalSpacing(12)
     page.cal_pass = NumField("Номер прохода")
     page.cal_temp = NumField("Температура")
     page.cal_temp.setPlaceholderText("°C")
-    cal.addWidget(page.cal_pass)
-    cal.addWidget(QLabel("температура, °C"))
-    cal.addWidget(page.cal_temp)
+    cal.addWidget(QLabel("Проход №"), 0, 0)
+    cal.addWidget(page.cal_pass, 0, 1)
+    cal.addWidget(QLabel("Температура, °C"), 0, 2)
+    cal.addWidget(page.cal_temp, 0, 3)
     b = button("Подобрать охлаждение")
-    cal.addWidget(b)
-    cal.addStretch()
+    cal.addWidget(b, 1, 0, 1, 4)
+    cal.setColumnStretch(4, 1)
     lay.addLayout(cal)
     page.cal_msg = label("", "muted", True)
     lay.addWidget(page.cal_msg)
@@ -52,7 +54,9 @@ def build_results(page, tabs):
         f"старения (Радионова и др., Metals, 2022). Это средняя по сечению температура: поверхность "
         f"в волоке нагревается сильнее. Жёлтым — проход на грани, красным — перегрев или перегрузка.",
         "note", True))
-    tabs.addTab(host, "Нагрев и стан")
+    i = tabs.addTab(host, "Нагрев")
+    tabs.setTabToolTip(i, "Нагрев проволоки и проверка на стане: барабаны, загрузка привода, "
+                          "скольжение")
 
 
 def show(page, res, p, mill):

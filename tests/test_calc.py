@@ -199,7 +199,167 @@ class TestForces(unittest.TestCase):
         low = plan_route(dict(BASE, sig_min=s + 10))
         self.assertFalse(low["strength_ok"])
         self.assertTrue(any("не ниже" in w for w in low["warnings"]))
-        self.assertFalse(plan_route(dict(BASE, sig_max=s - 10))["strength_ok"])
+        # прочнее требования — программа сама ставит отжиг по прочности
+        cut = plan_route(dict(BASE, sig_max=s - 10))
+        self.assertTrue(cut["strength_ok"])
+        self.assertGreater(cut["anneals"], res["anneals"])
+        self.assertLessEqual(cut["sig_end"], s - 10 + 1e-9)
+        self.assertTrue(any("по прочности" in r["notes"] for r in cut["rows"]))
+
+    def test_strength_anneal_example(self):
+        # 5,5 → 3,0 мм, требование 550–850 МПа: без отжига прочность намного выше
+        p = dict(BASE, dk=3.0, n=6, limit=96, sig0=550, sigf=1050)
+        free = plan_route(p)
+        self.assertGreater(free["sig_end"], 850)
+        r = plan_route(dict(p, sig_min=550, sig_max=850))
+        self.assertTrue(r["strength_ok"])
+        self.assertTrue(550 <= r["sig_end"] <= 850)
+        self.assertEqual(r["anneals"], free["anneals"] + 1)
+        # подбор числа проходов учитывает требование по прочности
+        n = suggest_n_full(dict(p, sig_min=550, sig_max=850))
+        self.assertTrue(plan_route(dict(p, n=n, sig_min=550, sig_max=850))["strength_ok"])
+
+    def test_fit_n(self):
+        from core.forces import fit_n
+        # кривая с n = 0,4 через 95 %: точка при 60 % даёт обратно n = 0,4
+        e60, e95 = eps_from_reduction(60), eps_from_reduction(95)
+        s60 = 560 + (1050 - 560) * (e60 / e95) ** 0.4
+        self.assertAlmostEqual(fit_n(560, 1050, 95, 60, s60), 0.4, places=9)
+        for bad in ((560, 1050, 95, 95, 900), (560, 1050, 95, 60, 500)):
+            with self.assertRaises(InputError):
+                fit_n(*bad)
+
+
+class TestProfiles(unittest.TestCase):
+    def test_geometry(self):
+        from core import profiles as pr
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10), 100, places=12)
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10, 1), 100 - (4 - math.pi), places=12)
+        self.assertAlmostEqual(pr.area(pr.HEX, 10), math.sqrt(3) / 2 * 100, places=12)
+        self.assertAlmostEqual(pr.across_corners(pr.SQUARE, 10), 10 * math.sqrt(2), places=12)
+        self.assertAlmostEqual(pr.across_corners(pr.HEX, 10), 20 / math.sqrt(3), places=12)
+        # радиус r = a/2 — квадрат становится кругом диаметра a
+        self.assertAlmostEqual(pr.across_corners(pr.SQUARE, 10, 4.9999999), 10, places=5)
+        self.assertAlmostEqual(pr.area(pr.SQUARE, 10, 5), math.pi * 25, places=9)
+        for shape in (pr.SQUARE, pr.HEX):
+            s = pr.area(shape, 7.3, 0.6)
+            self.assertAlmostEqual(pr.size_from_area(shape, s, 0.6), 7.3, places=9)
+
+    def test_route_from_round(self):
+        from core import profiles as pr
+        p = dict(BASE, dk=None, n=3, shape=pr.SQUARE, size=4.0, corner_r=0.4, way=pr.FROM_ROUND,
+                 lam_shape=1.15, n_shape=1, limit=96)
+        r = plan_route(p)
+        s = pr.area(pr.SQUARE, 4.0, 0.4)
+        self.assertAlmostEqual(r["dk"], math.sqrt(4 * s / math.pi), places=9)
+        self.assertAlmostEqual(r["rows"][-1]["d_out"], r["dk"], places=9)
+        self.assertAlmostEqual(r["rows"][-1]["lam"], 1.15, places=9)          # фасонный проход
+        self.assertAlmostEqual(r["d_round"], math.sqrt(4 * 1.15 * s / math.pi), places=9)
+        self.assertEqual(r["shaped"], [3])
+        self.assertIn("фасонная волока", r["rows"][-1]["notes"])
+        self.assertAlmostEqual(r["gpm"], 7.85 * s, places=9)                   # масса — по площади
+        # число проходов подбирается и для профиля
+        n = suggest_n_full(dict(p, n=1))
+        self.assertTrue(plan_route(dict(p, n=n))["gamma_min"] >= p["gmin"])
+
+    def test_card_with_empty_profile_fields(self):
+        # техкарта: все параметры, профиль не задан (старые карты и круглый маршрут)
+        params = {k: BASE.get(k) for k in PARAM_KEYS}
+        self.assertEqual(plan_route(params)["n"], BASE["n"])
+        self.assertEqual(plan_route(params)["shaped"], [])
+
+    def test_route_from_profile(self):
+        from core import profiles as pr
+        p = dict(BASE, n=2, shape=pr.HEX, size=10.0, corner_r=0.5, way=pr.FROM_PROFILE,
+                 size0=11.0, n_shape=2, sig0=500, sigf=900, redref=60)
+        r = plan_route(p)
+        lam = (pr.area(pr.HEX, 11, 0.5) / pr.area(pr.HEX, 10, 0.5)) ** 0.5
+        self.assertTrue(all(abs(x - lam) < 1e-9 for x in r["lams"]))
+        self.assertEqual(r["shaped"], [1, 2])
+        self.assertTrue(r["rows"][-1]["profile"].startswith("шестигранник 10"))
+        with self.assertRaises(InputError):
+            plan_route(dict(p, n=3))                  # все проходы фасонные
+
+
+class TestDeformModel(unittest.TestCase):
+    def test_pass_profile(self):
+        from core.deform_model import f_alpha, pass_profile, strain_at
+        self.assertAlmostEqual(f_alpha(1e-4), 1.0, places=6)
+        self.assertGreater(f_alpha(0.5), 1.0)
+        pp = pass_profile(1.25, 6)
+        self.assertAlmostEqual(pp["center"], math.log(1.25), places=12)    # в оси — однородная
+        a = math.radians(6)
+        self.assertAlmostEqual(pp["surface"], math.log(1.25) * math.sqrt(1 - 11 / 12 *
+                               math.sin(a) ** 2) + 2 / math.sqrt(3) * math.tan(a), places=12)
+        self.assertGreater(pp["surface"], pp["center"])
+        self.assertGreater(pp["phi"], 1.0)
+        # больше угол при той же вытяжке — больше неравномерность
+        self.assertGreater(pass_profile(1.25, 10)["phi"], pp["phi"])
+        self.assertLess(strain_at(0.5, 1.25, a), pp["surface"])
+
+    def test_avitzur_close_to_siebel(self):
+        from core.deform_model import route_deformation
+        r = plan_route(BASE)
+        d = route_deformation(r["rows"], r["forces"], dict(BASE, ys=0.85))
+        for x in d["passes"]:
+            self.assertTrue(1.0 < x["sig_d_avitzur"] / x["sig_d_siebel"] < 1.35, x["i"])
+        last = d["passes"][-1]
+        self.assertGreater(last["cum_surface"], last["cum_center"])
+        self.assertGreater(last["sig"][-1], last["sig"][0])       # поверхность прочнее оси
+
+    def test_anneal_resets_profile(self):
+        from core.deform_model import route_deformation
+        p = dict(BASE, limit=70)
+        r = plan_route(p)
+        self.assertGreater(r["anneals"], 0)
+        d = route_deformation(r["rows"], r["forces"], dict(p, ys=0.85))
+        first = next(x for x in d["passes"] if x["anneal"])
+        self.assertAlmostEqual(first["cum_center"], first["center"], places=12)
+
+
+class TestDeformLink(unittest.TestCase):
+    def test_export_and_calibrate(self):
+        import tempfile
+        from core import deform_link as dl
+        from core.deform_model import route_deformation
+        r = plan_route(BASE)
+        with tempfile.TemporaryDirectory() as tmp:
+            files = dl.export_route(tmp, r["rows"][:2], r["forces"][:2], BASE, "g")
+            self.assertIn("pass_01_die.stl", files)
+            with open(os.path.join(tmp, "pass_01_die.stl"), encoding="ascii") as fh:
+                stl = fh.read()
+            self.assertTrue(stl.startswith("solid die") and "facet normal" in stl)
+            with open(os.path.join(tmp, "results_template.csv"), encoding="utf-8-sig") as fh:
+                self.assertIn("Повреждаемость", fh.readline())
+        d = route_deformation(r["rows"], r["forces"], dict(BASE, ys=0.85))["passes"]
+        f1 = r["forces"][0]["P"] / 1000
+        text = ("Проход;Усилие, кН;Деформация за проход: поверхность;Деформация за проход: ось;"
+                "Повреждаемость макс.\n"
+                f"1;{f1 * 1.2:.4f}".replace(".", ",") + f";{d[0]['center'] + 0.5 * (d[0]['surface'] - d[0]['center']):.5f};{d[0]['center']:.5f};0,2\n"
+                "2;;;;0,9\n")
+        res = dl.parse_results(text)
+        self.assertEqual(len(res), 2)
+        cal = dl.calibrate(res, d, r["forces"], damage_crit=0.5)
+        self.assertAlmostEqual(cal["k_force"], 1.2, places=3)
+        self.assertAlmostEqual(cal["k_shear"], 0.5, places=3)
+        self.assertAlmostEqual(cal["delta_limit"], d[1]["delta"], places=9)
+        # поправка усилия проходит в расчёт маршрута
+        self.assertAlmostEqual(plan_route(dict(BASE, kF=1.2))["forces"][0]["P"] / 1000 / f1,
+                               1.2, places=6)
+        with self.assertRaises(InputError):
+            dl.parse_results("Проход;Усилие\n")
+
+    def test_calibration_storage(self):
+        import tempfile
+        from core import deform_link as dl
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "deform.json")
+            dl.save_calibration(dict(group="A", k_force=1.1, k_shear=0.6), path)
+            dl.save_calibration(dict(group="A", k_force=1.3, k_shear=0.7), path)
+            rows = dl.load_calibrations(path)
+            c = dl.active_calibration("A", rows)
+            self.assertEqual((c.k_force, c.k_shear), (1.3, 0.7))
+            self.assertIsNone(dl.active_calibration("B", rows))
 
 
 class TestCoating(unittest.TestCase):
@@ -224,7 +384,9 @@ class TestPlanAndCards(unittest.TestCase):
         self.assertAlmostEqual(res["productivity"], g_per_m(7.85, 1.2) * 15 * 3.6, places=6)
         self.assertEqual(res["warnings"], [])
         self.assertEqual(set(PARAM_KEYS), set(BASE) | {"t0", "tw", "cool", "cp", "vcool", "dcool", "lams", "ys", "sq",
-                                                     "sig_ann", "sig_min", "sig_max"})
+                                                     "sig_ann", "sig_min", "sig_max", "kF",
+                                                     "dlim", "shape", "size", "corner_r", "way",
+                                                     "lam_shape", "size0", "n_shape", "blocks"})
 
     def test_suggest_full_respects_gamma(self):
         p = dict(BASE, gmin=3.0)
@@ -284,6 +446,12 @@ class TestPlanAndCards(unittest.TestCase):
 
 
 class TestTolerance(unittest.TestCase):
+    def test_profile_standards(self):
+        self.assertEqual(tolerance("ГОСТ 8559-75 (квадрат), h11", 10), (0.0, -0.090))
+        self.assertEqual(tolerance("ГОСТ 8560-78 (шестигранник), h12", 22), (0.0, -0.210))
+        with self.assertRaises(InputError):
+            tolerance("ГОСТ 8559-75 (квадрат), h11", 120)
+
     def test_custom_ntd(self):
         import tempfile
         from core import tolerance as tl
@@ -399,6 +567,120 @@ class TestCost(unittest.TestCase):
         self.assertAlmostEqual(full["Возврат отходов"], -20000 * (1 / 0.98 - 1), places=6)
         self.assertAlmostEqual(full["Упаковка"], 10000, places=6)
         self.assertAlmostEqual(r["full"], r["conversion"] + sum(full.values()), places=6)
+
+    def test_vat_on_rod(self):
+        base = dict(COST, full=True, rod_price=80000, scrap_price=20000, pack_price=150,
+                    pack_kg=80, yield_pct=98)
+        r = cost_breakdown(dict(base, rod_vat_pct=22))
+        full = dict(r["full_items"])
+        self.assertAlmostEqual(full["Катанка (заготовка), с НДС 22 %"], 80000 * 1.22 / 0.98,
+                               places=6)
+        self.assertAlmostEqual(full["Упаковка"], 150 / 80 * 1000, places=6)   # моток 80 кг
+        old = dict(cost_breakdown(base)["full_items"])                       # старые техкарты
+        self.assertAlmostEqual(old["Катанка (заготовка)"], 80000 / 0.98, places=6)
+        self.assertIn(("Моток", 80.0), PACKAGES)
+
+
+class TestBlankAndThreading(unittest.TestCase):
+    def test_threading_lowers_output(self):
+        from core.cost import BLANK_COIL, run_share
+        base = dict(COST, energy_method=ENERGY_BY_PASSPORT)
+        r0 = cost_breakdown(base)
+        c = dict(base, blank=BLANK_COIL, coil_kg=1000, t_thread=10, t_change=5)
+        r1 = cost_breakdown(c)
+        q_t = r0["q_t"]
+        t_run = 1000 / q_t * 60
+        share = t_run / (t_run + 10 + 5)                # одна заправка на прогон
+        self.assertAlmostEqual(run_share(c, q_t)[0], share, places=12)
+        self.assertAlmostEqual(r1["q_f"], r0["q_f"] * share, places=9)
+        self.assertGreater(r1["conversion"], r0["conversion"])
+        # число проходов в прогоне на заправку не влияет
+        self.assertAlmostEqual(cost_breakdown(dict(c, n_passes=16))["q_f"], r1["q_f"], places=9)
+
+    def test_route_split_by_blocks(self):
+        from core.drawing import split_runs
+        r = plan_route(dict(BASE, blocks=6))           # 14 проходов на стане из 6 блоков
+        runs = split_runs(r["rows"])
+        self.assertEqual([len(x) for x in runs], [6, 6, 2])
+        self.assertEqual(r["runs"], 3)
+        for run in runs:                                # последний проход прогона — на финише
+            self.assertAlmostEqual(run[-1]["v"], BASE["v"], places=9)
+        # между прогонами проволока остывает
+        k = len(runs[0])
+        self.assertAlmostEqual(r["thermal"][k]["t_in"], 20.0, places=9)
+        one = plan_route(BASE)
+        self.assertEqual(one["runs"], 1)
+        # профиль стана задаёт блоки сам
+        from core.mills import DRIVE_INDIVIDUAL
+        mill = dict(name="M", drive=DRIVE_INDIVIDUAL, drums=8, drum_d=560, v_max=20,
+                    p_motor=None, eta=85, kin=None)
+        m = plan_route(BASE, "", mill)
+        self.assertEqual(m["runs"], 2)
+        self.assertTrue(m["mill"]["fits"])
+
+    def test_threading_per_run(self):
+        from core.cost import BLANK_COIL
+        p = dict(BASE, blocks=6)
+        r = plan_route(p)
+        c = dict(COST, blank=BLANK_COIL, coil_kg=800, t_thread=10, t_change=5)
+        cr = cost_for_route(c, p, r)
+        self.assertAlmostEqual(cr["t_aux"], (10 + 5) * 3, places=9)      # 3 прогона
+        self.assertLess(cr["run_share"], 1.0)
+        one = cost_for_route(c, BASE, plan_route(BASE))
+        self.assertGreater(cr["conversion"], one["conversion"])        # больше заправок — дороже
+
+    def test_bar_pointing_and_length(self):
+        from core.cost import BLANK_BAR, bar_length, point_loss, unit_mass
+        c = dict(COST, blank=BLANK_BAR, bar_m=6.0, point_mm=150, repoint_mm=30, t_thread=0,
+                 t_change=0)
+        self.assertAlmostEqual(unit_mass(c, 7.85, 10.0), g_per_m(7.85, 10.0) * 6 / 1000)
+        self.assertAlmostEqual(bar_length(c, 10.0, 5.0), 24.0)
+        self.assertAlmostEqual(point_loss(c, 10.0, [10.0]), 0.15 / 6)
+        # второй прогон: пруток уже 24 м, острим ещё 30 мм нового металла
+        self.assertAlmostEqual(point_loss(c, 10.0, [10.0, 5.0]), 0.15 / 6 + 0.03 / 24)
+        r = plan_route(BASE)
+        cr = cost_for_route(c, BASE, r)
+        plain = cost_for_route(dict(COST), BASE, r)
+        self.assertAlmostEqual(cr["point_loss"], 0.15 / 6, places=12)
+        self.assertAlmostEqual(cr["conversion"], plain["conversion"] / (1 - 0.15 / 6), places=6)
+
+
+class TestGrades(unittest.TestCase):
+    ROW = dict(name="Св-08Г2С-О, свой", rho=7.85, limit=90, lam_max=1.3, sig0=580, sigf=1100,
+               red_ref=95, n=0.45, cp=470, note="по сертификату")
+
+    def test_grade_becomes_group(self):
+        import tempfile
+        from core import grades
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                saved = grades.save_grades([self.ROW], os.path.join(tmp, "marki.json"))
+                self.assertEqual(saved[0]["sig0"], 580)
+                g = GROUPS[self.ROW["name"]]
+                self.assertEqual(g["family"], grades.FAMILY)
+                self.assertEqual(g["hardening"]["n"], 0.45)
+                self.assertEqual(DENSITY_MAP[self.ROW["name"]], 7.85)
+                self.assertEqual(list(GROUPS)[-1], self.ROW["name"])        # в конце списка
+                p = dict(BASE, sig0=580, sigf=1100, nh=0.45, redref=95)
+                self.assertEqual(plan_route(p, self.ROW["name"])["n"], 14)
+                # пересохранение без марки — группа пропадает, встроенные целы
+                n_before = len(GROUPS)
+                grades.save_grades([], os.path.join(tmp, "marki.json"))
+                self.assertNotIn(self.ROW["name"], GROUPS)
+                self.assertEqual(len(GROUPS), n_before - 1)
+        finally:
+            grades.apply_grades([])
+
+    def test_bad_grades(self):
+        from core.grades import check_grades
+        builtin = next(iter(GROUPS))
+        for bad in (dict(self.ROW, name=""), dict(self.ROW, name=builtin),
+                    dict(self.ROW, sigf=500), dict(self.ROW, limit=150),
+                    dict(self.ROW, rho="x")):
+            with self.assertRaises(InputError):
+                check_grades([bad])
+        with self.assertRaises(InputError):                      # повтор названия
+            check_grades([self.ROW, dict(self.ROW, name=self.ROW["name"].upper())])
 
 
 class TestCostInCards(unittest.TestCase):

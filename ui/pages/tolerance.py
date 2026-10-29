@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel
 from core.tolerance import (LEGACY, all_standards, check_measure, curvature, custom_row,
                             die_plan, ovality_share, tolerance)
 from core.util import InputError, fmt
-from ui.widgets import Card, FieldError, Page, cards_row, label, panel
+from ui.widgets import Card, FieldError, Page, cards_row, compact_combo, label, panel
 
 STATE_TEXT = {"ok": "в допуске", "near": "у верхней границы — готовить замену волоки",
               "out": "вне допуска"}
@@ -22,8 +22,10 @@ class TolerancePage(Page):
         g.addWidget(QLabel("Допуск"), 0, 0)
         self.std = QComboBox()
         self.std.addItems(all_standards())
+        compact_combo(self.std)
         g.addWidget(self.std, 0, 1)
-        self.d = self.add_field(g, 1, "Номинальный диаметр, мм", "1,2", "tol/d")
+        self.d = self.add_field(g, 1, "Номинальный размер, мм", "1,2", "tol/d")
+        self.d.setToolTip("Диаметр круга, сторона квадрата или размер шестигранника под ключ.")
         self.reserve = self.add_field(g, 2, "Новая волока выше нижней границы на, % поля", "25",
                                       "tol/reserve")
         self.meas = self.add_field(g, 3, "Замер проволоки, мм (необязательно)", "", "tol/meas")
@@ -46,7 +48,8 @@ class TolerancePage(Page):
             "ГОСТ 7417-75 и GB/T 905-1994 — поля h по ISO 286; для промежуточных диаметров "
             "по ГОСТ 7417 и GB/T 14957 допуск берётся по ближайшему большему размеру. "
             "Запас 25 % поля — стартовое значение: уточни с учётом упругого восстановления "
-            "проволоки и точности замера волок. Свои НТД (ТУ и др.) — подвкладка «Свои допуски».",
+            "проволоки и точности замера волок. Квадрат (ГОСТ 8559-75) и шестигранник (ГОСТ 8560-78) — "
+            "по стороне / размеру под ключ. Свои НТД (ТУ и др.) — подвкладка «Свои допуски».",
             "note", True))
         self.body.addStretch()
         self.combos["tol/std"] = self.std

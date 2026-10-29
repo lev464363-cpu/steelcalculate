@@ -1,34 +1,37 @@
 """Раздел «Маршрут и скорости»: проходы, отжиги, усилия, запас прочности."""
 import math
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QVBoxLayout)
 
 from core.data import GROUPS
 from core.cards import default_name, load_cards, save_cards, upsert_card
-from core.cost import cost_for_route
+from core.cost import BLANK_BAR, cost_for_route
 from core.mills import find_mill, load_mills
 from core.storage import DamagedFile
 from core.drawing import manual_fits, redistribute
+from core import profiles as prof
+from core.forces import fit_n
 from core.route_plan import PARAM_KEYS, plan_route, suggest_n_full
-from core.util import InputError, fmt
-from ui import cost_panel, dies_panel, heat_panel
+from core.util import InputError, fmt, g_per_m
+from ui import cost_panel, deform_panel, dies_panel, heat_panel
 from ui.chart import RouteChart
 from ui.draft_editor import DraftEditor
-from ui.export import save_table
+from ui.export import save_workbook, table_sheet
+from ui.export_dialog import ExportDialog
+from ui.popup import notify
 from ui.pdf import save_card_pdf, save_operator_pdf
 from ui.theme import T, px, sized
-from ui.widgets import (Card, FieldError, Page, button, fill_table, label, make_table, panel,
-                        tab_box, tab_form)
+from ui.widgets import (Card, FieldError, Page, button, fill_groups, fill_table, label,
+                        make_table, panel, tab_box, tab_form)
 from ui.anim import AnimatedTabWidget
 
 
 ROUTE_HEADERS = ["№", "Диаметр на входе, мм", "Диаметр на выходе, мм", "Вытяжка", "Обжатие, %",
-                 "Накопленное обжатие*, %", "Накопленная деформация*",
+                 "Накопл. обжатие*, %", "Накопл. деформация*",
                  "Прочность после прохода, МПа", "Напряжение волочения, МПа", "Запас прочности",
                  "Усилие волочения, кН", "Мощность, кВт", "Скорость проволоки, м/с",
-                 "Обороты барабана, об/мин", "Примечание"]
+                 "Обороты барабана, об/мин", "Длина бунта / прутка, м", "Примечание"]
 
 
 class RoutePage(Page):
@@ -63,20 +66,38 @@ class RoutePage(Page):
         field, note = adder(g)
         self.group = QComboBox()
         self.group.setMaxVisibleItems(20)
-        family = None
-        for name, grp in GROUPS.items():
-            if grp.get("family") != family:
-                if family is not None:
-                    self.group.insertSeparator(self.group.count())
-                family = grp.get("family")
-            self.group.addItem(name)
-            self.group.setItemData(self.group.count() - 1, f"{family}\n{name}",
-                                   Qt.ItemDataRole.ToolTipRole)
+        fill_groups(self.group, tooltips=True)
         note(self.group)
         self.prep = label("", "note", True)
         note(self.prep)
         self.d0 = field("Исходный диаметр, мм", "5,5", "route/d0")
         self.dk = field("Готовый диаметр, мм", "1,2", "route/dk")
+        # профиль готовой: круг или квадрат / шестигранник (core.profiles)
+        r = g.rowCount()
+        g.addWidget(QLabel("Готовый профиль"), r, 0)
+        self.shape = QComboBox()
+        self.shape.addItems(prof.SHAPES)
+        g.addWidget(self.shape, r, 1)
+        # строки профиля — в общей сетке формы (ровные столбцы), прячутся для круга
+        first = g.rowCount()
+        self.size = field("Размер: сторона / под ключ, мм", "10", "route/size")
+        self.corner_r = field("Радиус скругления углов, мм", "0,5", "route/corner_r")
+        r = g.rowCount()
+        g.addWidget(QLabel("Заготовка"), r, 0)
+        self.way = QComboBox()
+        self.way.addItems(prof.WAYS)
+        g.addWidget(self.way, r, 1)
+        self.lam_shape = field("Вытяжка в фасонных волоках (всего)", "1,15", "route/lam_shape")
+        self.size0 = field("Горячекатаный профиль: размер, мм", "11", "route/size0")
+        self.n_shape = field("Фасонных проходов", "1", "route/n_shape")
+        self.prof_note = label("", "note", True)
+        note(self.prof_note)
+        self.prof_rows = [g.itemAt(k).widget() for k in range(g.count())
+                          if g.getItemPosition(k)[0] >= first]
+        self.combos["route/shape"] = self.shape
+        self.combos["route/way"] = self.way
+        self.shape.currentIndexChanged.connect(self._profile_mode)
+        self.way.currentIndexChanged.connect(self._profile_mode)
         self.n = field("Число проходов", "14", "route/n")
         self.ratio = field("Перевес обжатия в начале маршрута", "1,15", "route/ratio")
         self.ratio.setToolTip("Во сколько раз вытяжка на первом проходе больше, чем на последнем.")
@@ -97,6 +118,10 @@ class RoutePage(Page):
         self.mills = []
         self.v = field("Скорость волочильного стана на финише, м/с", "15", "route/v")
         self.drum = field("Диаметр барабана, мм", "", "route/drum")
+        self.blocks = field("Блоков на стане", "", "route/blocks")
+        self.blocks.setPlaceholderText("из профиля стана")
+        self.blocks.setToolTip("Сколько проходов идёт за одну заправку. Если выбран профиль стана — "
+                               "берётся число его барабанов; пусто — весь этап за одну заправку.")
         self.drum.setPlaceholderText("необязательно")
         self.alpha = field("Полуугол волоки, °", "6", "route/alpha")
         self.mu = field("Коэффициент трения", "0,05", "route/mu")
@@ -122,6 +147,10 @@ class RoutePage(Page):
         self.sigf = field("Прочность после обжатия, МПа", "", "route/sigf")
         self.redref = field("…при суммарном обжатии, %", "", "route/redref")
         self.nh = field("Показатель упрочнения n", "", "route/nh")
+        self.fit_btn = button("Подобрать n по замеру…")
+        self.fit_btn.setToolTip("n — насколько быстро растёт прочность с обжатием. Подбирается по "
+                                "одной замеренной прочности при известном обжатии от катанки.")
+        note(self.fit_btn)
         self.sig_ann = field("Прочность после отжига, МПа", "", "route/sig_ann")
         self.sig_ann.setPlaceholderText("как у заготовки")
         self.ys = field("Отношение σт/σв", "0,85", "route/ys")
@@ -191,17 +220,22 @@ class RoutePage(Page):
         cost_panel.build_results(self, results)
         heat_panel.build_results(self, results)
         dies_panel.build_results(self, results)
+        deform_panel.build_results(self, results)
 
-        bar = QHBoxLayout()
+        bar = QGridLayout()             # 2×2 — не раздвигает окно
+        bar.setHorizontalSpacing(8)
+        bar.setVerticalSpacing(8)
         self.save_btn = button("Сохранить техкарту", primary=True)
-        self.pdf_btn = button("В PDF")
+        self.export_btn = button("Экспорт в Excel…")
+        self.export_btn.setToolTip("Маршрут, себестоимость, нагрев, волоки — что выгрузить, "
+                                   "выбирается в окне экспорта.")
+        self.pdf_btn = button("Техкарта в PDF")
         self.op_btn = button("Карта оператора")
         self.op_btn.setToolTip("Маршрутная карта для оператора стана: барабаны, волоки и номера "
                                "фильер из журнала, скорости и графы для замеров.")
-        self.export_btn = button("Экспорт в Excel")
-        for b in (self.save_btn, self.pdf_btn, self.op_btn, self.export_btn):
-            bar.addWidget(b)
-        bar.addStretch()
+        for i, b in enumerate((self.save_btn, self.export_btn, self.pdf_btn, self.op_btn)):
+            bar.addWidget(b, i // 2, i % 2)
+        bar.setColumnStretch(2, 1)
         right.addLayout(bar)
         main.addLayout(right, 1)
         self.body.addLayout(main, 1)
@@ -209,18 +243,21 @@ class RoutePage(Page):
         self.combos["route/group"] = self.group
         self.group.currentIndexChanged.connect(self.apply_group)
         self.auto_btn.clicked.connect(self.auto_n)
+        self.fit_btn.clicked.connect(self.fit_hardening)
         self.export_btn.clicked.connect(self.export)
         self.save_btn.clicked.connect(self.save_card)
         self.pdf_btn.clicked.connect(self.to_pdf)
         self.op_btn.clicked.connect(self.to_operator)
         self.texts["route/mill"] = self.mill.lineEdit()
         self.manual = None                # ручная раскладка из редактора обжатий
+        self.export_cols = None           # выбранные в прошлый раз столбцы проходов
         self.draft.dragged.connect(self.on_drag)
         self.draft.unpinned.connect(self.on_unpin)
         self.reset_btn.clicked.connect(self.reset_manual)
         self.mill.currentTextChanged.connect(self.safe_recalc)
         self.reload_mills()
         self.apply_group()
+        self._profile_mode()
 
     def apply_group(self, *args):
         name = self.group.currentText()
@@ -238,11 +275,64 @@ class RoutePage(Page):
         self.prep.setText(" ".join(x for x in (g.get("family", "") + ".", g.get("prep", "")) if x))
         self.hsrc.setText("Прочность: " + h["src"] + f" Лучше подставить прочность своей катанки и проволоки после известного обжатия.")
 
+    def _profile_mode(self, *args):
+        """Поля профиля видны для квадрата и шестигранника; готовый (и при калибровке
+        горячекатаного профиля — исходный) диаметр считается по площади профиля."""
+        shaped = self.shape.currentText() != prof.ROUND
+        from_profile = self.way.currentText() == prof.FROM_PROFILE
+        for w in self.prof_rows:
+            w.setVisible(shaped)
+        self.dk.setEnabled(not shaped)
+        self.d0.setEnabled(not (shaped and from_profile))
+        self.lam_shape.setEnabled(shaped and not from_profile)
+        self.size0.setEnabled(shaped and from_profile)
+        self.prof_note.setText(
+            "Маршрут считается по кругу той же площади; фасонные проходы помечены в таблице. "
+            + ("Все проходы — фасонные: число проходов = числу фасонных."
+               if from_profile else
+               "Круглые проходы до Ø заготовки под фасонную волоку, затем фасонные.")
+            if shaped else "")
+        self.draft.setEnabled(not shaped)        # ручная раскладка — только для круга
+        self.safe_recalc()
+
+    def _profile_inputs(self):
+        """Параметры профиля для core.profiles; для круга — только shape."""
+        shape = self.shape.currentText()
+        if shape == prof.ROUND:
+            return dict(shape=shape)
+        size, r = self.size.value(), self.corner_r.value(allow_zero=True)
+        try:
+            prof.check(shape, size, r)
+        except InputError as e:
+            raise FieldError(self.corner_r if size > 0 else self.size, str(e))
+        n_sh = self.n_shape.value()
+        if n_sh != int(n_sh):
+            raise FieldError(self.n_shape, "Число фасонных проходов — целое.")
+        out = dict(shape=shape, size=size, corner_r=r, way=self.way.currentText(),
+                   n_shape=int(n_sh))
+        if out["way"] == prof.FROM_PROFILE:
+            out["size0"] = self.size0.value()
+            if out["size0"] <= size:
+                raise FieldError(self.size0, "Горячекатаный профиль должен быть больше готового.")
+        else:
+            out["lam_shape"] = self.lam_shape.value()
+            if out["lam_shape"] <= 1:
+                raise FieldError(self.lam_shape, "Вытяжка в фасонных волоках — больше 1.")
+        return out
+
     def _inputs(self):
-        d0 = self.d0.value()
-        dk = self.dk.value()
+        pr = self._profile_inputs()
+        if pr["shape"] != prof.ROUND:
+            # готовый диаметр — эквивалентный круг профиля; исходный — при калибровке профиля
+            dk = prof.eq_diameter(pr["shape"], pr["size"], pr["corner_r"])
+            d0 = (prof.eq_diameter(pr["shape"], pr["size0"], pr["corner_r"])
+                  if pr["way"] == prof.FROM_PROFILE else self.d0.value())
+        else:
+            d0 = self.d0.value()
+            dk = self.dk.value()
         if dk >= d0:
-            raise FieldError(self.dk, "Готовый диаметр должен быть меньше исходного.")
+            raise FieldError(self.dk if pr["shape"] == prof.ROUND else self.size,
+                             "Готовый размер должен быть меньше исходного.")
         ratio = self.ratio.value()
         if ratio < 1:
             raise FieldError(self.ratio, "Перевес обжатия — не меньше 1 "
@@ -252,6 +342,9 @@ class RoutePage(Page):
             raise FieldError(self.lmax, "Максимальная вытяжка за проход должна быть больше 1.")
         v = self.v.value()
         drum = self.drum.value(optional=True)
+        blocks = self.blocks.value(optional=True)
+        if blocks is not None and (blocks != int(blocks) or blocks < 1):
+            raise FieldError(self.blocks, "Блоков на стане — целое число от 1.")
         limit = self.limit.value()
         if limit >= 100:
             raise FieldError(self.limit, "Предел обжатия должен быть меньше 100 %.")
@@ -300,7 +393,9 @@ class RoutePage(Page):
         return dict(vcool=vcool, dcool=dcool, d0=d0, dk=dk, ratio=ratio, lmax=lmax, v=v, drum=drum, limit=limit,
                     alpha=alpha, mu=mu, gmin=gmin, sig0=sig0, sigf=sigf, nh=nh, rho=rho,
                     redref=redref, t0=t0, tw=tw, cool=cool, cp=cp, ys=ys, sq=sq,
-                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max)
+                    sig_ann=sig_ann, sig_min=sig_min, sig_max=sig_max,
+                    blocks=int(blocks) if blocks else None,
+                    **deform_panel.route_inputs(self), **pr)
 
     def recalc(self):
         p = self._inputs()
@@ -314,6 +409,13 @@ class RoutePage(Page):
         p["lams"] = self._manual_lams(p)
         mill = self.mill_profile()
         res = plan_route(p, self.group.currentText(), mill)
+        p["d0"], p["dk"] = res["d0"], res["dk"]        # для профиля — эквивалентные круги
+        if p["shape"] != prof.ROUND:
+            for f, v in ((self.dk, res["dk"]), (self.d0, res["d0"])):
+                if not f.isEnabled():               # расчётное значение — без пересчёта
+                    f.blockSignals(True)
+                    f.setText(fmt(v, 3))
+                    f.blockSignals(False)
         total, lams, rows, anneals, forces = (res["total"], res["lams"], res["rows"],
                                               res["anneals"], res["forces"])
         self.rows, self.forces, self.p, self.n_used, self.res = rows, forces, p, n, res
@@ -324,7 +426,19 @@ class RoutePage(Page):
         self.c[3].set(fmt(gamma_min, 2))
         self.c[4].set(fmt(power, 1))
         self.c[5].set(fmt(gpm * p["v"] * 3.6, 0))
+        shape_info = ""
+        if p["shape"] != prof.ROUND:
+            s = prof.area(p["shape"], p["size"], p["corner_r"])
+            shape_info = (f"Готовый профиль: {prof.label(p['shape'], p['size'])}, S = {fmt(s, 2)} мм², "
+                          f"экв. Ø {fmt(res['dk'], 3)}, по углам Ø "
+                          f"{fmt(prof.across_corners(p['shape'], p['size'], p['corner_r']), 3)}"
+                          + (f"; круг перед фасонной волокой Ø {fmt(res['d_round'], 3)}"
+                             if res["d_round"] else "") + ".  ")
+        runs_info = (f"Прогонов (заправок стана): {res['runs']}"
+                     + (f" — по ≤ {res['blocks']} блоков" if res["blocks"] else "") + ".  "
+                     if res["runs"] > 1 else "")
         self.summary.setText(
+            shape_info + self.blank_summary(rows, p) + runs_info +
             f"Средняя вытяжка {fmt(total ** (1 / n))}  ·  первый проход {fmt(lams[0])}, "
             f"последний {fmt(lams[-1])}  ·  истинная деформация {fmt(math.log(total))}  ·  "
             f"масса 1 м готовой {fmt(gpm, 2)} г. Мощность — на самой проволоке, без потерь "
@@ -334,7 +448,8 @@ class RoutePage(Page):
         self.warn.setText("\n".join(warn))
 
         data, colors = [], []
-        for r, f in zip(rows, forces):
+        lengths = self.unit_lengths(rows, p)
+        for k, (r, f) in enumerate(zip(rows, forces)):
             low = f["gamma"] < p["gmin"]
             note = r["notes"]
             if low:
@@ -343,7 +458,8 @@ class RoutePage(Page):
                          fmt(r["red_cum"], 1), fmt(r["eps"]), fmt(f["sig_out"], 0),
                          fmt(f["sig_d"], 0), fmt(f["gamma"], 2), fmt(f["P"] / 1000, 2),
                          fmt(f["power"], 2), fmt(r["v"], 2),
-                         fmt(r["rpm"], 0) if r["rpm"] else "—", note))
+                         fmt(r["rpm"], 0) if r["rpm"] else "—",
+                         fmt(lengths[k], 1) if lengths else "—", note))
             bad = r["over"] or low
             colors.append((T["anneal"] if r["anneal"] else (T["warn_soft"] if low else None),
                            T["warn"] if bad else None))
@@ -351,6 +467,7 @@ class RoutePage(Page):
         self.recalc_cost()
         heat_panel.show(self, res, p, mill)
         dies_panel.show(self, res, p, self.group.currentText())
+        deform_panel.show(self, res, p, self.group.currentText())
         self.chart.set_data(p["d0"], [dict(r, over=r["over"] or f["gamma"] < p["gmin"])
                                       for r, f in zip(rows, forces)])
         self.draft.set_data(rows, forces, res["thermal"], p["lmax"], p["gmin"],
@@ -425,6 +542,7 @@ class RoutePage(Page):
         return find_mill(self.mills, self.mill.currentText())
 
     def on_show(self):
+        fill_groups(self.group, tooltips=True)       # могли добавиться свои марки
         self.reload_mills()
         self.safe_recalc()
 
@@ -453,6 +571,7 @@ class RoutePage(Page):
         cost_panel.clear(self)
         heat_panel.clear(self)
         dies_panel.clear(self)
+        deform_panel.clear(self)
         for c in self.c:
             c.set("—")
         self.summary.setText("")
@@ -477,12 +596,58 @@ class RoutePage(Page):
         self.status.setText("Не удалось подобрать маршрут с допустимыми вытяжкой и запасом "
                             "прочности. Уменьши перевес обжатия, угол волоки или трение.")
 
+    def unit_lengths(self, rows, p):
+        """Длина бунта или прутка после каждого прохода, м (постоянство объёма), или None."""
+        info = cost_panel.blank_info(self)
+        if not info:
+            return None
+        blank, val = info
+        if blank == BLANK_BAR:
+            return [val * (p["d0"] / r["d_out"]) ** 2 for r in rows]
+        return [val * 1000 / g_per_m(p["rho"], r["d_out"]) for r in rows]
+
+    def blank_summary(self, rows, p):
+        info, lengths = cost_panel.blank_info(self), self.unit_lengths(rows, p)
+        if not info or not lengths:
+            return ""
+        blank, val = info
+        if blank == BLANK_BAR:
+            return (f"Пруток {fmt(val, 2)} м → {fmt(lengths[-1], 1)} м после всех проходов "
+                    f"(удлинение в {fmt(lengths[-1] / val, 2)} раза).  ")
+        return f"Бунт {fmt(val, 0)} кг: длина готовой {fmt(lengths[-1] / 1000, 2)} км.  "
+
+    def fit_hardening(self):
+        """Показатель упрочнения по замеру: прочность проволоки после известного обжатия."""
+        try:
+            sig0, sigf, redref = self.sig0.value(), self.sigf.value(), self.redref.value()
+        except FieldError as e:
+            QMessageBox.warning(self, "Показатель упрочнения", str(e))
+            return
+        red, ok = QInputDialog.getDouble(self, "Замер прочности", "Суммарное обжатие от катанки "
+                                         "(или от отжига), %:", 60.0, 1.0, 99.0, 1)
+        if not ok:
+            return
+        sig, ok = QInputDialog.getDouble(self, "Замер прочности", f"Прочность проволоки после "
+                                         f"обжатия {fmt(red, 1)} %, МПа:", sigf, 1.0, 5000.0, 0)
+        if not ok:
+            return
+        try:
+            n = fit_n(sig0, sigf, redref, red, sig)
+        except InputError as e:
+            QMessageBox.warning(self, "Показатель упрочнения", str(e))
+            return
+        self.nh.setText(fmt(n, 2))
+        notify(self, f"Показатель упрочнения n = {fmt(n, 2)}", "ok",
+               detail=f"Кривая проходит через {fmt(sig0, 0)} МПа у катанки, {fmt(sigf, 0)} МПа "
+                      f"при {fmt(redref, 0)} % и замер {fmt(sig, 0)} МПа при {fmt(red, 1)} %.")
+
     def current_params(self):
         """Параметры текущего маршрута или None, если в полях ошибка."""
         if not self.rows:
-            QMessageBox.information(self, "Маршрут", "Сначала получи корректный маршрут.")
+            notify(self, "Сначала получи корректный маршрут", "warn")
             return None
-        return {k: self.p[k] for k in PARAM_KEYS}
+        # параметры профиля есть не у каждого способа — отсутствующие пустые
+        return {k: self.p.get(k) for k in PARAM_KEYS}
 
     def save_card(self):
         p = self.current_params()
@@ -511,9 +676,8 @@ class RoutePage(Page):
             return
         extra = "" if self.cost_inputs else (" Себестоимость не сохранена: она выключена или в "
                                              "ценах есть ошибка.")
-        QMessageBox.information(self, "Готово", f"Техкарта «{name}» сохранена. Её можно открыть, "
-                                                "сравнить и распечатать в разделе «Техкарты»."
-                                + extra)
+        notify(self, f"Техкарта «{name}» сохранена", "ok",
+               detail="Открыть, сравнить и распечатать — в разделе «Техкарты»." + extra)
 
     def to_pdf(self):
         p = self.current_params()
@@ -537,7 +701,12 @@ class RoutePage(Page):
         cost_panel.load(self, card.get("cost"))
         self.mill.setEditText(card.get("mill", ""))
         lams = card["params"].get("lams")
-        self.manual = dict(lams=list(lams), pinned=set()) if lams else None
+        params = card["params"]
+        self.shape.setCurrentText(params.get("shape") or prof.ROUND)
+        if params.get("way"):
+            self.way.setCurrentText(params["way"])
+        shaped = (params.get("shape") or prof.ROUND) != prof.ROUND
+        self.manual = dict(lams=list(lams), pinned=set()) if lams and not shaped else None
         self._loading = True
         names = {"d0": self.d0, "dk": self.dk, "n": self.n, "ratio": self.ratio, "v": self.v,
                  "drum": self.drum, "alpha": self.alpha, "mu": self.mu, "limit": self.limit,
@@ -545,7 +714,9 @@ class RoutePage(Page):
                  "sigf": self.sigf, "nh": self.nh, "redref": self.redref, "t0": self.t0,
                  "tw": self.tw, "cool": self.cool, "cp": self.cp, "vcool": self.vcool,
                  "dcool": self.dcool, "ys": self.ys, "sq": self.sq,
-                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max}
+                 "sig_ann": self.sig_ann, "sig_min": self.sig_min, "sig_max": self.sig_max,
+                 "size": self.size, "corner_r": self.corner_r, "lam_shape": self.lam_shape,
+                 "size0": self.size0, "n_shape": self.n_shape, "blocks": self.blocks}
         for key, field in names.items():
             if key not in card["params"]:       # старые техкарты: оставляем текущее значение
                 continue
@@ -554,10 +725,39 @@ class RoutePage(Page):
         self._loading = False
         self.safe_recalc()
 
-    def export(self):
+    def export(self, preset=None):
+        """Экспорт в Excel: окно выбора разделов и столбцов, затем книга — лист на раздел."""
         if not self.rows:
-            QMessageBox.information(self, "Экспорт", "Сначала получи корректный маршрут.")
+            notify(self, "Сначала получи корректный маршрут.", "warn")
             return
+        cost_ok = cost_panel.has_cost(self)
+        on = preset or {"params", "passes", "cost", "cost_in"}
+        n_items = len(self.res["cost"]["items"]) + len(self.res["cost"]["full_items"]) \
+            if cost_ok else 0
+        n_pick = n_items - len(self.cost_skip) if cost_ok else 0
+        sections = [
+            ("params", "Параметры маршрута", "Группа, диаметры, скорость, металл и пределы.",
+             "params" in on),
+            ("passes", "Проходы", "Таблица проходов — отметь нужные столбцы.", "passes" in on),
+            ("cost", "Себестоимость: статьи",
+             f"Отмечено галочками в таблице «Себестоимость»: {n_pick} из {n_items}."
+             if cost_ok else "Себестоимость не рассчитана (вкладка «Экономика»).",
+             "cost" in on, cost_ok),
+            ("cost_in", "Себестоимость: цены и нормы", "Исходные данные вкладки «Экономика».",
+             "cost_in" in on, cost_ok),
+            ("heat", "Нагрев и стан", "Температуры, барабаны, загрузка привода, скольжение.",
+             "heat" in on),
+            ("dies", "Волоки", "Углы, поясок, материал, фильеры из журнала.",
+             "dies" in on, bool(self.die_plan)),
+            ("deform", "Деформация", "Неравномерность, деформация и прочность поверхности и "
+             "оси, напряжение по Avitzur, Δ.", "deform" in on, bool(self.def_model)),
+        ]
+        dlg = ExportDialog(self, sections, ROUTE_HEADERS, "passes", self.export_cols)
+        if dlg.exec() != ExportDialog.DialogCode.Accepted:
+            return
+        chosen, cols = dlg.chosen(), dlg.chosen_columns()
+        self.export_cols = cols
+        sheets = []
         p = self.p
         info = [("Группа сталей", self.group.currentText()), ("Исходный диаметр, мм", p["d0"]),
                 ("Готовый диаметр, мм", p["dk"]), ("Проходов", self.n_used),
@@ -572,12 +772,34 @@ class RoutePage(Page):
                 ("Прочность после отжига, МПа", p["sig_ann"] if p["sig_ann"] else "как у заготовки"),
                 ("Прочность готовой по ГОСТ/ТУ, МПа",
                  " – ".join(fmt(x, 0) if x else "—" for x in (p["sig_min"], p["sig_max"])))]
-        rows, fills = [], []
-        for r, f in zip(self.rows, self.forces):
-            rows.append([r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),
-                         round(r["red"], 2), round(r["red_cum"], 2), round(r["eps"], 4),
-                         round(f["sig_out"]), round(f["sig_d"]), round(f["gamma"], 3),
-                         round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
-                         round(r["rpm"], 1) if r["rpm"] else "", r["notes"]])
-            fills.append("yellow" if r["anneal"] else ("red" if f["gamma"] < p["gmin"] else None))
-        save_table(self, "маршрут_волочения", info, ROUTE_HEADERS, rows, fills)
+        if "params" in chosen:
+            sheets.append(("Параметры маршрута", [], ["Параметр", "Значение"],
+                           [list(x) for x in info], None))
+        if "passes" in chosen:
+            idx = [i for i, h in enumerate(ROUTE_HEADERS) if h in cols] or \
+                list(range(len(ROUTE_HEADERS)))
+            rows, fills = [], []
+            lengths = self.unit_lengths(self.rows, p)
+            for k, (r, f) in enumerate(zip(self.rows, self.forces)):
+                full = [r["i"], round(r["d_in"], 4), round(r["d_out"], 4), round(r["lam"], 4),
+                        round(r["red"], 2), round(r["red_cum"], 2), round(r["eps"], 4),
+                        round(f["sig_out"]), round(f["sig_d"]), round(f["gamma"], 3),
+                        round(f["P"] / 1000, 3), round(f["power"], 3), round(r["v"], 3),
+                        round(r["rpm"], 1) if r["rpm"] else "",
+                        round(lengths[k], 1) if lengths else "", r["notes"]]
+                rows.append([full[i] for i in idx])
+                fills.append("yellow" if r["anneal"] else
+                             ("red" if f["gamma"] < p["gmin"] else None))
+            sheets.append(("Проходы", [], [ROUTE_HEADERS[i] for i in idx], rows, fills))
+        if cost_ok and chosen & {"cost", "cost_in"}:
+            sheets += cost_panel.cost_sheets(self, "cost" in chosen, "cost_in" in chosen)
+        if "heat" in chosen:
+            sheets.append(table_sheet("Нагрев и стан", self.heat_table))
+        if "dies" in chosen:
+            sheets.append(table_sheet("Волоки", self.die_table))
+        if "deform" in chosen:
+            sheets.append(table_sheet("Деформация", self.def_table))
+        path = save_workbook(self, f"маршрут {default_name(self.group.currentText(), p, '')}",
+                             sheets)
+        if path:
+            notify(self, f"Сохранено листов: {len(sheets)}", "ok", detail=path)
