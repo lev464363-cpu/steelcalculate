@@ -157,8 +157,8 @@ def build_qss(t):
     QTabWidget::pane {{ border: none; background: transparent; }}
     QStackedWidget#qt_tabwidget_stackedwidget, QWidget#refTab {{ background: transparent; }}
     /* внутренние вкладки — «таблетки»; вкладки раздела — с подчёркиванием */
-    QTabBar::tab {{ background: transparent; color: {t['muted']}; padding: 6px 12px;
-                   border: 1px solid transparent; border-radius: 9px; margin: 2px 3px 6px 0;
+    QTabBar::tab {{ background: transparent; color: {t['muted']}; padding: 6px 9px;
+                   border: 1px solid transparent; border-radius: 9px; margin: 2px 1px 6px 0;
                    font-family: {DISPLAY}; }}
     QTabBar::tab:hover {{ color: {t['text']}; background: {t['surface2']}; }}
     QTabBar::tab:selected {{ color: {t['pill_text']}; font-weight: 600; background: {t['accent_soft']};
